@@ -269,7 +269,10 @@ class XGBStrategyV2(XGBStrategy):
         return features_v2.build_features(prices, index_df)
 
     def _training_frame_fn(self):
-        return features_v2.training_frame
+        # Bind self.target_column so multi-target ensembles can train each
+        # member on its own forward target without polluting the shared API.
+        from functools import partial
+        return partial(features_v2.training_frame, target=self.target_column)
 
     def _prediction_frame_fn(self):
         return features_v2.prediction_frame
@@ -538,6 +541,8 @@ class EnsembleStrategy:
             "members": [m.name for m in self.members],
             "member_weights": list(self.weights),
             "mean_member_ic": float(np.mean(member_ics)) if member_ics else float("nan"),
+            # Surface as `val_ic` so walkforward report shows it.
+            "val_ic": float(np.mean(member_ics)) if member_ics else float("nan"),
         }
         for n, d in per_member_diag.items():
             for k, v in d.items():
@@ -577,5 +582,34 @@ STRATEGIES: dict[str, Callable[[], Strategy]] = {
             LGBStrategyV2(seed=42),
         ),
         weights=(1.0, 1.0, 1.0, 1.0),
+    ),
+    # Multi-target ensemble: same model & features, 4 different forward
+    # targets.  This diversifies y-side noise (which seed bagging cannot do).
+    # Weights favour the canonical 5d target (matches the eval window best).
+    "xgb_v2_multi_target": lambda: EnsembleStrategy(
+        name="xgb_v2_multi_target",
+        members=(
+            XGBStrategyV2(target_column="target_5d"),
+            XGBStrategyV2(target_column="target_3d"),
+            XGBStrategyV2(target_column="target_10d"),
+            XGBStrategyV2(target_column="target_5d_sharpe"),
+        ),
+        weights=(2.0, 1.0, 1.0, 1.0),
+    ),
+    # Multi-target + multi-seed (8 members).  Doubles compute but in theory
+    # combines y-noise and x-noise diversification.
+    "xgb_v2_multi_target_bag": lambda: EnsembleStrategy(
+        name="xgb_v2_multi_target_bag",
+        members=(
+            XGBStrategyV2(target_column="target_5d", seed=42),
+            XGBStrategyV2(target_column="target_5d", seed=2026),
+            XGBStrategyV2(target_column="target_3d", seed=42),
+            XGBStrategyV2(target_column="target_3d", seed=2026),
+            XGBStrategyV2(target_column="target_10d", seed=42),
+            XGBStrategyV2(target_column="target_10d", seed=2026),
+            XGBStrategyV2(target_column="target_5d_sharpe", seed=42),
+            XGBStrategyV2(target_column="target_5d_sharpe", seed=2026),
+        ),
+        weights=(2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
     ),
 }

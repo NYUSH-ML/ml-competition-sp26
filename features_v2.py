@@ -64,6 +64,15 @@ FEATURE_COLUMNS: list[str] = [
 TARGET_COLUMN = "target_5d"
 FORWARD_HORIZON = 5
 
+# Auxiliary targets for the multi-target ensemble.  Each diversifies the
+# y-side noise that a single 5d forward return contains.
+#   - target_3d  : shorter horizon, more signal-per-time but noisier
+#   - target_10d : longer horizon, smoother but slower to react
+#   - target_5d_sharpe : 5d forward return / 5d forward volatility
+#                        downweights "lucky one-day spike" winners
+AUX_TARGETS: list[str] = ["target_3d", "target_10d", "target_5d_sharpe"]
+ALL_TARGETS: list[str] = [TARGET_COLUMN] + AUX_TARGETS
+
 # Subset that we additionally expose as cross-sectional pct-ranks (useful
 # nonlinear signal that survives the z-score).
 RANKED_FEATURES: list[str] = [
@@ -139,7 +148,35 @@ def _per_stock_features(df: pd.DataFrame, index_ret: pd.Series) -> pd.DataFrame:
     df["beta_60d"] = beta
     df["ivol_60d"] = ivol
 
+    # Primary target: 5d forward return on close-to-close.
     df[TARGET_COLUMN] = close.shift(-FORWARD_HORIZON) / close - 1.0
+
+    # Auxiliary targets for multi-target ensemble.
+    df["target_3d"] = close.shift(-3) / close - 1.0
+    df["target_10d"] = close.shift(-10) / close - 1.0
+
+    # Sharpe-like target: 5d forward return / 5d forward realised volatility
+    # (forward sample std of daily returns over the same horizon).  Big
+    # rewards for SMOOTH winners, penalises one-day-spike winners.
+    fwd_ret_1d = ret_1d.shift(-FORWARD_HORIZON)  # placeholder; recompute
+    # Actually: compute std of daily returns over the next 5 trading days.
+    # `ret_1d` is the period return, so the forward 5d window starts at t+1.
+    fwd_vol = (
+        ret_1d.shift(-FORWARD_HORIZON).rolling(FORWARD_HORIZON).std()
+    )
+    # Translate "rolling at the END of the future window" into "starting AT t":
+    # easiest is to shift -1 first then take rolling forward.  Use a simple
+    # construction with shifted columns to be unambiguous.
+    fwd_returns = pd.concat(
+        [ret_1d.shift(-(i + 1)) for i in range(FORWARD_HORIZON)], axis=1
+    )
+    fwd_vol = fwd_returns.std(axis=1, ddof=0)
+    # Floor the volatility to avoid divide-by-tiny-vol blow-ups in low-vol
+    # regimes (otherwise Sharpe values can hit 1000s on a smooth uptick).
+    fwd_vol_floored = fwd_vol.clip(lower=0.005)
+    df["target_5d_sharpe"] = (df[TARGET_COLUMN] / fwd_vol_floored)
+    # Suppress unused placeholder
+    _ = fwd_ret_1d
     return df
 
 
@@ -249,8 +286,15 @@ def build_features(prices: pd.DataFrame, index_df: pd.DataFrame) -> pd.DataFrame
     return panel
 
 
-def training_frame(panel: pd.DataFrame, min_date=None, max_date=None) -> pd.DataFrame:
-    df = panel.dropna(subset=ALL_FEATURES + [TARGET_COLUMN]).copy()
+def training_frame(panel: pd.DataFrame, min_date=None, max_date=None,
+                   target: str = TARGET_COLUMN) -> pd.DataFrame:
+    """Drop NA on features + the requested target column."""
+    if target not in panel.columns:
+        raise ValueError(
+            f"target {target!r} not in panel; available: "
+            f"{[c for c in panel.columns if c.startswith('target_')]}"
+        )
+    df = panel.dropna(subset=ALL_FEATURES + [target]).copy()
     if min_date is not None:
         df = df[df["date"] >= pd.Timestamp(min_date)]
     if max_date is not None:
