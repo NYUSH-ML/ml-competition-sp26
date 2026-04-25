@@ -596,6 +596,40 @@ STRATEGIES: dict[str, Callable[[], Strategy]] = {
         ),
         weights=(2.0, 1.0, 1.0, 1.0),
     ),
+    # Multi-horizon return-only (no Sharpe).  Keeps y-noise diversification
+    # but stays aligned with the contest's actual eval metric (5d absolute
+    # excess return).  Hypothesis: should retain the IC IR gain without
+    # the mean-drop the Sharpe target caused.
+    "xgb_v2_multi_horizon": lambda: EnsembleStrategy(
+        name="xgb_v2_multi_horizon",
+        members=(
+            XGBStrategyV2(target_column="target_5d"),
+            XGBStrategyV2(target_column="target_3d"),
+            XGBStrategyV2(target_column="target_10d"),
+        ),
+        weights=(2.0, 1.0, 1.0),
+    ),
+    # ---- single-target hyperparam sweep on the current champion (xgb_v2) ---
+    # H1: more trees + slower lr + shallower trees -> tighter shrinkage.
+    "xgb_v2_h1": lambda: XGBStrategyV2(
+        n_estimators=800, max_depth=5, learning_rate=0.03,
+        colsample_bytree=0.7,
+    ),
+    # H2: fewer trees + faster lr + deeper trees -> bias toward big-edge stocks.
+    "xgb_v2_h2": lambda: XGBStrategyV2(
+        n_estimators=400, max_depth=7, learning_rate=0.06,
+        colsample_bytree=0.8,
+    ),
+    # H3: heavier regularisation, more column subsampling.
+    "xgb_v2_h3": lambda: XGBStrategyV2(
+        n_estimators=600, max_depth=6, learning_rate=0.04,
+        colsample_bytree=0.5, reg_lambda=3.0, min_child_weight=10,
+    ),
+    # H4: shallow + low lr, lots of trees (closest to "linear-ish" boosting).
+    "xgb_v2_h4": lambda: XGBStrategyV2(
+        n_estimators=1200, max_depth=4, learning_rate=0.025,
+        colsample_bytree=0.7,
+    ),
     # Multi-target + multi-seed (8 members).  Doubles compute but in theory
     # combines y-noise and x-noise diversification.
     "xgb_v2_multi_target_bag": lambda: EnsembleStrategy(
