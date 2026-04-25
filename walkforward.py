@@ -51,7 +51,6 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from features import build_features
 from score_submission import score_window
 from strategies import (
     DEFAULT_EMBARGO, DEFAULT_TOP_K, MAX_WEIGHT, MIN_STOCKS, STRATEGIES,
@@ -313,12 +312,14 @@ def main():
     print(f"   {len(prices):,} rows, {prices['stock_code'].nunique()} stocks, "
           f"dates {prices['date'].min().date()} -> {prices['date'].max().date()}")
 
-    print(">> Building feature panel (one-time)")
-    panel = build_features(prices)
-    print(f"   panel: {len(panel):,} rows")
-
     index_df = pd.read_parquet(args.index)
     index_df["date"] = pd.to_datetime(index_df["date"])
+
+    strategy = STRATEGIES[args.strategy]()
+    print(f">> Running strategy: {strategy.name}")
+    print(">> Building feature panel (one-time, strategy-specific)")
+    panel = strategy.build_panel(prices, index_df)
+    print(f"   panel: {len(panel):,} rows, {panel.shape[1]} columns")
 
     trading_dates = _trading_dates(panel)
     windows = make_windows(
@@ -334,9 +335,6 @@ def main():
           f"(horizon={args.horizon}d, stride={args.stride}d)")
     if not windows:
         raise SystemExit("No windows produced; widen --start/--end or lower --min-history.")
-
-    strategy = STRATEGIES[args.strategy]()
-    print(f">> Running strategy: {strategy.name}")
 
     results: list[WindowResult] = []
     for i, w in enumerate(windows, 1):
