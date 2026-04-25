@@ -632,26 +632,33 @@ class ClusterNeutralWrapper:
     def build_panel(self, prices, index_df):
         return self.base.build_panel(prices, index_df)
 
-    def fit_predict(self, panel, as_of, top_k=DEFAULT_TOP_K):
+    def fit_predict_scores(self, panel, as_of):
+        """Return cluster-neutralised scores (so this wrapper can be used as
+        an ensemble member)."""
         scores, diag = self.base.fit_predict_scores(panel, as_of)
-        # Reuse the panel as the price source — has stock_code/date/pct_chg.
         cols = ["stock_code", "date"]
-        ret_col = "pct_chg" if "pct_chg" in panel.columns else None
-        if ret_col is None:
-            # Fallback: derive from close.
-            prices = panel[["stock_code", "date", "close"]].copy()
+        if "pct_chg" in panel.columns:
+            prices = panel[cols + ["pct_chg"]].copy()
+        elif "pct_change" in panel.columns:
+            prices = panel[cols + ["pct_change"]].rename(
+                columns={"pct_change": "pct_chg"}
+            )
         else:
-            prices = panel[cols + [ret_col]].copy()
+            prices = panel[["stock_code", "date", "close"]].copy()
         neutralised = cluster_neutralize_scores(
             scores, prices, as_of,
             n_clusters=self.n_clusters,
             lookback_days=self.lookback_days,
         )
-        weights = build_portfolio(neutralised, top_k=top_k)
         diag = {**diag,
                 "neutral_n_clusters": self.n_clusters,
                 "neutral_lookback": self.lookback_days,
                 "neutral_n_neutralised": int(neutralised.notna().sum())}
+        return neutralised, diag
+
+    def fit_predict(self, panel, as_of, top_k=DEFAULT_TOP_K):
+        neutralised, diag = self.fit_predict_scores(panel, as_of)
+        weights = build_portfolio(neutralised, top_k=top_k)
         return StrategyResult(weights=weights, diagnostics=diag)
 
 
@@ -782,5 +789,56 @@ STRATEGIES: dict[str, Callable[[], Strategy]] = {
             XGBStrategyV2(target_column="target_5d_sharpe"),
         ),
         weights=(2.0, 1.0, 1.0),
+    ),
+    # ---- ROUND 3: held-out-aware robust blends -----------------------------
+    # Members chosen using ONLY the first 30 windows (selection set) -- they
+    # were the most stable performers there.  We then test on the unseen
+    # last 8 windows (held-out tail).  The blend is rank-average so each
+    # member's bias gets diluted.
+    #
+    # robust_blend_v3a: 3 members, each a different family of variation.
+    #   - default xgb_v2     (selection #2, held-out #3, shrink +0.18%)
+    #   - xgb_v2 h4 settings (selection #4, held-out #7, shrink -0.01%)
+    #   - h4 + cluster neutral (selection #5, held-out #10, shrink -0.13%)
+    "robust_blend_v3a": lambda: EnsembleStrategy(
+        name="robust_blend_v3a",
+        members=(
+            XGBStrategyV2(),
+            XGBStrategyV2(
+                n_estimators=1200, max_depth=4,
+                learning_rate=0.025, colsample_bytree=0.7,
+            ),
+            ClusterNeutralWrapper(
+                name="h4_neutral_inner",
+                base=XGBStrategyV2(
+                    n_estimators=1200, max_depth=4,
+                    learning_rate=0.025, colsample_bytree=0.7,
+                ),
+                n_clusters=10,
+            ),
+        ),
+        weights=(1.0, 1.0, 1.0),
+    ),
+    # robust_blend_v3b: adds the multi-target ensemble member -- different
+    # forward horizons further diversify y-side noise.  4 members total.
+    "robust_blend_v3b": lambda: EnsembleStrategy(
+        name="robust_blend_v3b",
+        members=(
+            XGBStrategyV2(),
+            XGBStrategyV2(
+                n_estimators=1200, max_depth=4,
+                learning_rate=0.025, colsample_bytree=0.7,
+            ),
+            ClusterNeutralWrapper(
+                name="h4_neutral_inner",
+                base=XGBStrategyV2(
+                    n_estimators=1200, max_depth=4,
+                    learning_rate=0.025, colsample_bytree=0.7,
+                ),
+                n_clusters=10,
+            ),
+            XGBStrategyV2(target_column="target_3d"),
+        ),
+        weights=(1.0, 1.0, 1.0, 1.0),
     ),
 }
