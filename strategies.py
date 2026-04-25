@@ -28,6 +28,7 @@ from typing import Callable, Protocol
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+import lightgbm as lgb
 from scipy.stats import spearmanr
 
 from features import (
@@ -197,7 +198,13 @@ class XGBStrategy:
             random_state=self.seed,
         )
 
-    def fit_predict(self, panel, as_of, top_k=DEFAULT_TOP_K):
+    def fit_predict_scores(self, panel, as_of):
+        """Train and return (scores: Series[stock_code -> float], diag: dict).
+
+        Pure prediction step — no portfolio construction.  Used both by
+        `fit_predict` (which then calls build_portfolio) and by the ensemble
+        strategy (which rank-averages scores from multiple base learners).
+        """
         feats = list(self.feature_columns)
         tgt = self.target_column
         train_df, val_df, train_end, val_start = _train_val_split(
@@ -225,21 +232,22 @@ class XGBStrategy:
 
         pred_df = pred_df.assign(score=model.predict(pred_df[feats]))
         scores = pred_df.set_index("stock_code")["score"]
-        weights = build_portfolio(scores, top_k=top_k)
+        diag = {
+            "val_ic": val_ic,
+            "n_train": len(train_df),
+            "n_val": len(val_df),
+            "n_pred": len(pred_df),
+            "n_features": len(feats),
+            "train_end": train_end.date().isoformat(),
+            "val_start": val_start.date().isoformat(),
+            "best_iter": int(getattr(model, "best_iteration", -1) or -1),
+        }
+        return scores, diag
 
-        return StrategyResult(
-            weights=weights,
-            diagnostics={
-                "val_ic": val_ic,
-                "n_train": len(train_df),
-                "n_val": len(val_df),
-                "n_pred": len(pred_df),
-                "n_features": len(feats),
-                "train_end": train_end.date().isoformat(),
-                "val_start": val_start.date().isoformat(),
-                "best_iter": int(getattr(model, "best_iteration", -1) or -1),
-            },
-        )
+    def fit_predict(self, panel, as_of, top_k=DEFAULT_TOP_K):
+        scores, diag = self.fit_predict_scores(panel, as_of)
+        weights = build_portfolio(scores, top_k=top_k)
+        return StrategyResult(weights=weights, diagnostics=diag)
 
 
 # ----------------------------------------------------------------------------
@@ -373,9 +381,201 @@ class XGBRankerStrategy(XGBStrategyV2):
         )
 
 
+# ----------------------------------------------------------------------------
+# LightGBM regression over v2 features — second base learner for ensembling
+# ----------------------------------------------------------------------------
+
+@dataclass
+class LGBStrategyV2:
+    """LightGBM-based v2 strategy.  Same train/val split & target as XGBStrategyV2,
+    but a different boosting library + a different default tree shape so it makes
+    a useful ensemble partner (different bias).
+    """
+    name: str = "lgb_v2"
+    feature_columns: tuple = tuple(features_v2.ALL_FEATURES)
+    target_column: str = features_v2.TARGET_COLUMN
+
+    n_estimators: int = 800
+    num_leaves: int = 64           # leaf-wise growth -> different shape from xgb
+    max_depth: int = -1
+    learning_rate: float = 0.03
+    feature_fraction: float = 0.7
+    bagging_fraction: float = 0.8
+    bagging_freq: int = 5
+    min_data_in_leaf: int = 80
+    reg_lambda: float = 1.0
+    seed: int = 42
+    val_days: int = 30
+    embargo: int = DEFAULT_EMBARGO
+
+    def build_panel(self, prices, index_df):
+        return features_v2.build_features(prices, index_df)
+
+    def _training_frame_fn(self):
+        return features_v2.training_frame
+
+    def _prediction_frame_fn(self):
+        return features_v2.prediction_frame
+
+    def _model(self):
+        return lgb.LGBMRegressor(
+            n_estimators=self.n_estimators,
+            num_leaves=self.num_leaves,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            feature_fraction=self.feature_fraction,
+            bagging_fraction=self.bagging_fraction,
+            bagging_freq=self.bagging_freq,
+            min_data_in_leaf=self.min_data_in_leaf,
+            reg_lambda=self.reg_lambda,
+            random_state=self.seed,
+            n_jobs=-1,
+            verbose=-1,
+        )
+
+    def fit_predict_scores(self, panel, as_of):
+        feats = list(self.feature_columns)
+        tgt = self.target_column
+        train_df, val_df, train_end, val_start = _train_val_split(
+            panel, as_of, self.val_days, self.embargo,
+            training_frame_fn=self._training_frame_fn(),
+        )
+
+        model = self._model()
+        model.fit(
+            train_df[feats], train_df[tgt],
+            eval_set=[(val_df[feats], val_df[tgt])],
+            callbacks=[lgb.early_stopping(40, verbose=False),
+                       lgb.log_evaluation(0)],
+        )
+
+        val_pred = model.predict(val_df[feats])
+        val_ic = rank_ic(val_df[tgt].to_numpy(), val_pred, val_df["date"].to_numpy())
+
+        pred_df = self._prediction_frame_fn()(panel, as_of=as_of)
+        if pred_df.empty:
+            raise RuntimeError(f"No prediction rows on {as_of.date()}")
+        pred_df = pred_df.assign(score=model.predict(pred_df[feats]))
+        scores = pred_df.set_index("stock_code")["score"]
+        diag = {
+            "val_ic": val_ic,
+            "n_train": len(train_df),
+            "n_val": len(val_df),
+            "n_pred": len(pred_df),
+            "n_features": len(feats),
+            "train_end": train_end.date().isoformat(),
+            "val_start": val_start.date().isoformat(),
+            "best_iter": int(getattr(model, "best_iteration_", -1) or -1),
+        }
+        return scores, diag
+
+    def fit_predict(self, panel, as_of, top_k=DEFAULT_TOP_K):
+        scores, diag = self.fit_predict_scores(panel, as_of)
+        weights = build_portfolio(scores, top_k=top_k)
+        return StrategyResult(weights=weights, diagnostics=diag)
+
+
+# ----------------------------------------------------------------------------
+# Ensemble: rank-average of multiple base learners
+# ----------------------------------------------------------------------------
+
+@dataclass
+class EnsembleStrategy:
+    """Train each base learner independently on the same train/val split,
+    convert each model's CSI500-cross-section predictions into pct-ranks
+    (scale-free), average those ranks (optionally weighted), and feed the
+    averaged ranks into the standard top-K portfolio builder.
+
+    Why rank-average vs score-average?  Different boosters return scores on
+    different magnitude scales (XGB regression target, LGB target, ranker
+    logits).  Ranks normalise that out and are robust to outlier predictions.
+    """
+    name: str = "ensemble_v2"
+    members: tuple = field(default_factory=lambda: (
+        XGBStrategyV2(), LGBStrategyV2(),
+    ))
+    weights: tuple = field(default_factory=lambda: (1.0, 1.0))
+
+    def build_panel(self, prices, index_df):
+        # All current members use the v2 feature set, so build it once.
+        return features_v2.build_features(prices, index_df)
+
+    def fit_predict(self, panel, as_of, top_k=DEFAULT_TOP_K):
+        if len(self.members) != len(self.weights):
+            raise ValueError("members and weights must be same length")
+
+        wsum = float(sum(self.weights))
+        per_member_ranks: list[pd.Series] = []
+        per_member_diag: dict[str, dict] = {}
+        member_ics: list[float] = []
+
+        for m in self.members:
+            scores, diag = m.fit_predict_scores(panel, as_of)
+            # Convert each member's raw scores into pct-ranks (0..1) across
+            # the SAME prediction-day cross-section, so a name with prob 0.85
+            # of being top-decile gets the same magnitude regardless of which
+            # booster produced it.
+            ranks = scores.rank(method="average", pct=True)
+            per_member_ranks.append(ranks)
+            per_member_diag[m.name] = diag
+            ic = diag.get("val_ic")
+            if ic is not None and not (isinstance(ic, float) and np.isnan(ic)):
+                member_ics.append(float(ic))
+
+        # Weighted average rank.  Outer-join the indexes so a stock missing
+        # from one member's prediction set just contributes zero from that
+        # member (effectively penalising it).
+        all_codes = sorted(set().union(*[r.index for r in per_member_ranks]))
+        agg = pd.Series(0.0, index=all_codes)
+        for w, r in zip(self.weights, per_member_ranks):
+            agg = agg.add(r.reindex(all_codes).fillna(0.0) * w, fill_value=0.0)
+        agg = agg / wsum
+
+        weights = build_portfolio(agg, top_k=top_k)
+
+        diag = {
+            "n_members": len(self.members),
+            "members": [m.name for m in self.members],
+            "member_weights": list(self.weights),
+            "mean_member_ic": float(np.mean(member_ics)) if member_ics else float("nan"),
+        }
+        for n, d in per_member_diag.items():
+            for k, v in d.items():
+                diag[f"{n}.{k}"] = v
+        return StrategyResult(weights=weights, diagnostics=diag)
+
+
 # Register strategies here so the CLI can look them up by --strategy <name>.
 STRATEGIES: dict[str, Callable[[], Strategy]] = {
     "xgb_baseline": lambda: XGBStrategy(),
     "xgb_v2": lambda: XGBStrategyV2(),
     "xgb_ranker_v2": lambda: XGBRankerStrategy(),
+    "lgb_v2": lambda: LGBStrategyV2(),
+    "ensemble_v2": lambda: EnsembleStrategy(),
+    # Multi-seed bagging of xgb_v2: same model, different random seeds.
+    # Lowers variance without sacrificing mean, since each member has ~equal
+    # alpha but different idiosyncratic noise.
+    "xgb_v2_bag": lambda: EnsembleStrategy(
+        name="xgb_v2_bag",
+        members=(
+            XGBStrategyV2(seed=42),
+            XGBStrategyV2(seed=7),
+            XGBStrategyV2(seed=123),
+            XGBStrategyV2(seed=2026),
+            XGBStrategyV2(seed=314),
+        ),
+        weights=(1.0, 1.0, 1.0, 1.0, 1.0),
+    ),
+    # XGB-heavy ensemble: 3 xgb seeds + 1 lgb -> retains LGB's diversity but
+    # lets the (better) xgb dominate the consensus.
+    "xgb_heavy_ensemble": lambda: EnsembleStrategy(
+        name="xgb_heavy_ensemble",
+        members=(
+            XGBStrategyV2(seed=42),
+            XGBStrategyV2(seed=7),
+            XGBStrategyV2(seed=123),
+            LGBStrategyV2(seed=42),
+        ),
+        weights=(1.0, 1.0, 1.0, 1.0),
+    ),
 }
