@@ -637,8 +637,10 @@ class EnsembleStrategy:
     weights: tuple = field(default_factory=lambda: (1.0, 1.0))
 
     def build_panel(self, prices, index_df):
-        # All current members use the v2 feature set, so build it once.
-        return features_v2.build_features(prices, index_df)
+        # Build the v3 panel which is a superset of v2 (same training rows,
+        # plus 5 index-relative columns).  This way the ensemble can mix
+        # v2 and v3 members without losing rows.
+        return features_v3.build_features(prices, index_df)
 
     def fit_predict(self, panel, as_of, top_k=DEFAULT_TOP_K):
         if len(self.members) != len(self.weights):
@@ -748,6 +750,25 @@ STRATEGIES: dict[str, Callable[[], Strategy]] = {
     "xgb_v3": lambda: XGBStrategyV3(),
     # v3 + per-day target winsorization at [1%, 99%] -- noise robustness.
     "xgb_v3_winsor": lambda: XGBStrategyV3(target_winsor_q=(0.01, 0.99)),
+    # ROUND 4 ablation: isolate the target-winsor effect from the new
+    # features -- same as xgb_v2 but training target is per-day clipped.
+    "xgb_v2_winsor": lambda: XGBStrategyV3(
+        feature_columns=tuple(features_v2.ALL_FEATURES),
+        target_column=features_v2.TARGET_COLUMN,
+        target_winsor_q=(0.01, 0.99),
+    ),
+    # ROUND 4 final blend: 50/50 rank-average of round-3 champion (xgb_v2)
+    # and the most-stable new variant (v3_winsor).  Both individually have
+    # shrink >= 0, so an equal-weight blend should not introduce sel-tuned
+    # bias and may give us xgb_v2's mean with v3_winsor's stability.
+    "xgb_v2_v3_winsor_blend": lambda: EnsembleStrategy(
+        name="xgb_v2_v3_winsor_blend",
+        members=(
+            XGBStrategyV2(),
+            XGBStrategyV3(target_winsor_q=(0.01, 0.99)),
+        ),
+        weights=(1.0, 1.0),
+    ),
     "xgb_ranker_v2": lambda: XGBRankerStrategy(),
     "lgb_v2": lambda: LGBStrategyV2(),
     "ensemble_v2": lambda: EnsembleStrategy(),
