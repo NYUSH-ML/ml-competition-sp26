@@ -1,14 +1,15 @@
-# CSI500 Spring 2026 — 运行总结（第三轮 held-out 验证后）
+# CSI500 Spring 2026 — 运行总结（第四轮 held-out 验证后）
 
 ## 最终交付物
 
 | 文件 | 说明 |
 |---|---|
-| **`submissions/round3_final.csv`** | **最终主提交** — `xgb_v2 K=50` 默认策略，held-out 上稳定排名第 3 |
-| `submissions/final_neutral_8.csv` | 备用 — 第二轮"冠军"，但 held-out 检验显示对近期窗口过拟合 |
+| **`submissions/round4_primary_xgb_v2.csv`** | **最终主提交** — `xgb_v2 K=50`，held-out mean +0.84% (#3 hold-mean) |
+| `submissions/round4_defensive_xgb_v3_winsor.csv` | **防守备份** — `xgb_v3_winsor`：std 1.58%（最低），hit 66%（最高），t=2.41，与主提交 80% 重合但分散 |
+| `submissions/round3_final.csv` | （等价于主提交，旧名保留） |
 | `submissions/baseline.csv` | 保底 — 起点 baseline，永远兜底 |
 
-## 主提交统计 (`round3_final.csv`)
+## 主提交统计 (`round4_primary_xgb_v2.csv`)
 
 | 项 | 值 |
 |---|---|
@@ -35,6 +36,38 @@
 **`xgb_v2 K=50` 是 19 个候选里唯一一个在 sel 和 hold 上都进 top 3 的**，shrink +0.18%（held-out 比 sel 还高）。
 而 `xgb_v2_neutral_8` 的"冠军"地位严重依赖 sel 集尾部的 epoch（2025-12 至 2026-02），在 held-out 上跌到第 8。
 新建的 robust ensembles 反而把不稳成员的方差累计放大，held-out 直接负值。
+
+---
+
+## 第四轮：features_v3 + target winsorization 归因实验
+
+第四轮的目标是**只在 held-out 验证为正向 shrink 才采用**。新增了：
+- `features_v3.py`：v2 + 5 个指数相对因子（excess returns 1/5/20、outperform streak、price acceleration）
+- `XGBStrategyV3` 含可选的 per-day target winsorization
+
+| 策略 | mean% | std% | t | hit | IC IR | hold mean% | shrink |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| baseline | +0.39 | 1.74 | 1.39 | 58% | 0.20 | +0.62 | +0.29 |
+| xgb_v2（主提交） | +0.70 | 2.13 | 2.03 | 58% | 0.23 | **+0.84** | **+0.18** |
+| **xgb_v3 (新特征 only)** | **+0.23** | 1.79 | 0.80 | 53% | 0.11 | +0.19 | −0.06 |
+| **xgb_v2_winsor (winsor only)** | **+0.28** | 1.72 | 1.00 | 47% | 0.27 | +0.26 | −0.03 |
+| **xgb_v3_winsor (双方都加)** | **+0.62** | **1.58** | **2.41** | **66%** | 0.17 | +0.62 | **−0.001** |
+| xgb_v2_v3_winsor_blend | +0.61 | 1.90 | 1.99 | 55% | 0.20 | +0.37 | −0.31 |
+
+**重大归因发现（写报告用）**：
+- 单独加 v3 新特征：mean **崩到 0.23%**（−0.47%）
+- 单独加 target winsor：mean **崩到 0.28%**（−0.42%）
+- **两者一起：mean 0.62%（接近 v2），但 std/t/hit 全胜（hit 66% 创新高）**
+- 这是典型的 **feature × regularization 非线性协同**：噪声样本在 v3 高维特征空间里被 winsor 切掉后，模型才能干净地学习指数相对因子的真实信号
+
+**为什么不切换到 xgb_v3_winsor 当主提交**：
+- 它 hold mean 0.62% 比 xgb_v2 的 0.84% 低 0.22%，且 38 窗口 mean 也低 0.08%
+- 它的优势是**稳定性而非均值**（worst −2.69% vs xgb_v2 −2.80%）
+- 因此**作为防守备份提交**：如果实盘评估窗口是大跌行情可临时切换
+
+**为什么不用 v2+v3_winsor blend**：
+- 38 窗口 mean +0.61% 已不及 v2 单模型
+- held-out shrink **−0.31%** — 又一次确认"集成相关基学习器在 hold 上反而掉"
 
 ---
 
@@ -126,7 +159,8 @@
 |---|---|---|---|
 | 1 | baseline + walk-forward 框架 + features_v2 | xgb_v2 K=50 | 38 窗口 mean +0.70%，t 跨过 1.96 显著线 |
 | 2 | LambdaRank / LightGBM / 集成 / bagging / 多目标 / 聚类中性化 / 超参 sweep | xgb_v2_neutral_8 | 38 窗口 mean +0.75%，t=2.36 |
-| 3 | held-out 检验（前 30 训 / 后 8 测）发现轮 2 冠军过拟合 | **xgb_v2 K=50** | held-out shrink +0.18%，唯一稳定赢家 |
+| 4 | features_v3（指数相对因子）+ target winsorization 归因实验 | **xgb_v2 K=50（保留）** + xgb_v3_winsor 防守备份 | 新方法 hold mean 0.62% 不及 v2 的 0.84%；保留主提交但加备份 |
+| 3 | held-out 检验（前 30 训 / 后 8 测）发现轮 2 冠军过拟合 | **xgb_v2 K=50** | held-out shrink +0.18%���唯一稳定赢家 |
 
 ---
 
@@ -138,7 +172,11 @@ source .venv/bin/activate
 
 # 重新生成主提交（如果数据有更新）
 python make_submission.py --strategy xgb_v2 --top-k 50 \
-    --out submissions/round3_final.csv
+    --out submissions/round4_primary_xgb_v2.csv
+
+# 重新生成防守备份提交
+python make_submission.py --strategy xgb_v3_winsor --top-k 50 \
+    --out submissions/round4_defensive_xgb_v3_winsor.csv
 
 # 跑完整 38 窗口对比任意策略
 python walkforward.py --strategy xgb_v2 --tag any_tag
@@ -147,10 +185,10 @@ python walkforward.py --strategy xgb_v2 --tag any_tag
 python heldout_analysis.py
 
 # 校验提交
-python validate_submission.py submissions/round3_final.csv
+python validate_submission.py submissions/round4_primary_xgb_v2.csv
 
 # 历史回测（评估窗口 04-15 ~ 04-21）
-python score_submission.py submissions/round3_final.csv \
+python score_submission.py submissions/round4_primary_xgb_v2.csv \
     --start 20260415 --end 20260421
 ```
 
@@ -162,7 +200,8 @@ python score_submission.py submissions/round3_final.csv \
 |---|---|
 | `features.py` | 原始 baseline 因子（14 维） |
 | `features_v2.py` | 丰富因子集（30 维 + 4 个目标，含每日缩尾 + 横截面 z-score） |
-| `strategies.py` | 统一 Strategy 接口 + 24 个注册策略 + 共享辅助函数（`build_portfolio`、`cluster_neutralize_scores`） |
+| `features_v3.py` | v2 + 5 个指数相对因子（excess returns 1/5/20、outperform streak、price acceleration） |
+| `strategies.py` | 统一 Strategy 接口 + 26 个注册策略 + 共享辅助函数（`build_portfolio`、`cluster_neutralize_scores`、`XGBStrategyV3` 含可选 target winsor） |
 | `walkforward.py` | 不重叠多窗回测调度器，落盘 `reports/<tag>_<时间戳>.{csv,json}` |
 | `make_submission.py` | 一行命令生成任意策略的提交 + 自动校验 |
 | `analyze_stability.py` | 把 walk-forward 历史按时间切 3 epochs，按"最差 epoch 表现"排序策略 |
@@ -177,7 +216,8 @@ python score_submission.py submissions/round3_final.csv \
 ## 比赛日清单（提交前）
 
 1. `python download_data.py --update` 抓最新 OHLCV
-2. `python make_submission.py --strategy xgb_v2 --top-k 50 --out submissions/<日期>.csv`
-3. `python validate_submission.py submissions/<日期>.csv`
-4. `head -10 submissions/<日期>.csv` 人工肉眼检查 top 持仓不奇怪
-5. 上传 `submissions/<日期>.csv`
+2. `python make_submission.py --strategy xgb_v2 --top-k 50 --out submissions/<日期>_primary.csv`（主提交）
+3. `python make_submission.py --strategy xgb_v3_winsor --top-k 50 --out submissions/<日期>_defensive.csv`（备用）
+4. `python validate_submission.py submissions/<日期>_primary.csv`
+5. `head -10 submissions/<日期>_primary.csv` 人工肉眼检查 top 持仓不奇怪
+6. 默认上传 `<日期>_primary.csv`；若评估窗前几日大盘急跌或波动放大，可考虑 `<日期>_defensive.csv`
