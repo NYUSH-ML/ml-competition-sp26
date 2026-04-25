@@ -39,7 +39,7 @@ from features import (
 import features_v2
 import features_v3
 
-MIN_STOCKS = 30
+MIN_STOCKS = 30  # Competition rule: >= 30 stocks required
 MAX_WEIGHT = 0.10
 DEFAULT_TOP_K = 50
 DEFAULT_EMBARGO = 5  # >= FORWARD_HORIZON to keep train labels out of pred features
@@ -60,6 +60,13 @@ def rank_ic(y_true: np.ndarray, y_pred: np.ndarray, dates: np.ndarray) -> float:
         if not np.isnan(rho):
             ics.append(rho)
     return float(np.mean(ics)) if ics else float("nan")
+
+
+def build_portfolio_equal(scores: pd.Series, top_k: int) -> pd.Series:
+    """Equal-weight top-K portfolio (for concentrated K=10 analysis)."""
+    chosen = scores.sort_values(ascending=False).head(top_k)
+    w = pd.Series(1.0 / top_k, index=chosen.index)
+    return w
 
 
 def build_portfolio(scores: pd.Series, top_k: int = DEFAULT_TOP_K) -> pd.Series:
@@ -741,10 +748,31 @@ class ClusterNeutralWrapper:
         return StrategyResult(weights=weights, diagnostics=diag)
 
 
+# ----------------------------------------------------------------------------
+# K=10 "all-in" strategy: top 10 stocks at 10% each (equal weight)
+# For exploratory analysis only - higher expected return but much higher risk.
+# ----------------------------------------------------------------------------
+
+@dataclass
+class XGBStrategyK10(XGBStrategyV2):
+    """Top-10 equal-weight variant for concentrated portfolio analysis."""
+    name: str = "xgb_v2_k10"
+
+    def fit_predict(self, panel, as_of, top_k=10):
+        scores, diag = self.fit_predict_scores(panel, as_of)
+        weights = build_portfolio_equal(scores, top_k=10)
+        diag["portfolio_type"] = "equal_weight_k10"
+        return StrategyResult(weights=weights, diagnostics=diag)
+
+
 # Register strategies here so the CLI can look them up by --strategy <name>.
 STRATEGIES: dict[str, Callable[[], Strategy]] = {
     "xgb_baseline": lambda: XGBStrategy(),
     "xgb_v2": lambda: XGBStrategyV2(),
+    # K=10 concentrated portfolio (10 stocks x 10% each)
+    "xgb_v2_k10": lambda: XGBStrategyK10(),
+    # K=20 medium concentration (5% each)
+    "xgb_v2_k20": lambda: XGBStrategyV2(),  # use --top-k 20 flag
     # ROUND 4: v3 features (v2 + 5 index-relative factors).  Same model,
     # same hyperparams as xgb_v2 -- only the feature set changes.
     "xgb_v3": lambda: XGBStrategyV3(),
