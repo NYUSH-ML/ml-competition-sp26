@@ -314,22 +314,37 @@ class XGBRankerStrategy(XGBStrategyV2):
             training_frame_fn=self._training_frame_fn(),
         )
 
-        # Pairwise loss requires rows grouped by query (here: by trading day).
-        train_df = train_df.sort_values("date")
-        val_df = val_df.sort_values("date")
+        # Pairwise loss requires rows grouped by query (= trading day) AND
+        # XGBoost 2.x demands non-negative integer "relevance degree" labels
+        # in [0, 31] when NDCG with exponential gain is the eval metric.
+        # Bin the continuous 5d-forward-return target into 32 quantile buckets
+        # PER DAY -> always satisfies the [0, 31] constraint while preserving
+        # intra-query ordering (which is all pairwise/NDCG losses care about).
+        N_BUCKETS = 32
+        def _bucketize(g):
+            r = g.rank(method="first", ascending=True) - 1  # 0..n-1
+            n = len(g)
+            return (r * N_BUCKETS // n).clip(upper=N_BUCKETS - 1).astype(int)
+
+        train_df = train_df.sort_values(["date", "stock_code"]).copy()
+        val_df = val_df.sort_values(["date", "stock_code"]).copy()
+        train_df["_rel"] = train_df.groupby("date")[tgt].transform(_bucketize)
+        val_df["_rel"] = val_df.groupby("date")[tgt].transform(_bucketize)
         group_train = train_df.groupby("date").size().to_numpy()
         group_val = val_df.groupby("date").size().to_numpy()
 
         model = self._ranker()
         model.fit(
-            train_df[feats], train_df[tgt],
+            train_df[feats], train_df["_rel"],
             group=group_train,
-            eval_set=[(val_df[feats], val_df[tgt])],
+            eval_set=[(val_df[feats], val_df["_rel"])],
             eval_group=[group_val],
             verbose=False,
         )
 
         val_pred = model.predict(val_df[feats])
+        # Score with rank IC against the *real* continuous return so the
+        # number is comparable to regression strategies.
         val_ic = rank_ic(
             val_df[tgt].to_numpy(), val_pred, val_df["date"].to_numpy()
         )
