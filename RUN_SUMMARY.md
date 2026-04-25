@@ -1,14 +1,14 @@
-# CSI500 Spring 2026 — 运行总结
+# CSI500 Spring 2026 — 运行总结（第三轮 held-out 验证后）
 
 ## 最终交付物
 
 | 文件 | 说明 |
 |---|---|
-| **`submissions/final_neutral_8.csv`** | **推荐主提交** — `xgb_v2_neutral_8` 策略，38 窗口 walk-forward 冠军 |
-| `submissions/final_xgb_v2_k50.csv` | 备用 — 原冠军 `xgb_v2 K=50`，未做聚类中性化 |
+| **`submissions/round3_final.csv`** | **最终主提交** — `xgb_v2 K=50` 默认策略，held-out 上稳定排名第 3 |
+| `submissions/final_neutral_8.csv` | 备用 — 第二轮"冠军"，但 held-out 检验显示对近期窗口过拟合 |
 | `submissions/baseline.csv` | 保底 — 起点 baseline，永远兜底 |
 
-## 主提交统计 (`final_neutral_8.csv`)
+## 主提交统计 (`round3_final.csv`)
 
 | 项 | 值 |
 |---|---|
@@ -19,7 +19,22 @@
 | 最小权重 | 0.08% |
 | 校验 | `validate_submission.py` 全部通过 |
 
-前 5 大持仓：300390 / 688295 / 002261 / 002436 / 002851
+前 8 大持仓：300390 / 688295 / 002261 / 002436 / 301308 / 600549 / 002756 / 300223
+
+## 为什么换回 `xgb_v2`（默认）而不用第二轮的 `xgb_v2_neutral_8`
+
+第三轮做了 held-out 检验：把前 30 个 walk-forward 窗口当 selection 集，后 8 个当 held-out。结果：
+
+| 策略 | sel mean% | sel rank | hold mean% | hold rank | shrink |
+|---|---:|---:|---:|---:|---:|
+| **xgb_v2 K=50（最终选）** | +0.67 | #3 | **+0.84** | #3 | **+0.18** |
+| xgb_v2_neutral_8（前冠军） | +0.81 | **#1** | +0.52 | #8 | **−0.29** |
+| robust_blend_v3a（新建） | +0.74 | #2 | **−0.04** | #18 | **−0.77** |
+| xgb_v2_h4 | +0.62 | #4 | +0.61 | #7 | −0.01 |
+
+**`xgb_v2 K=50` 是 19 个候选里唯一一个在 sel 和 hold 上都进 top 3 的**，shrink +0.18%（held-out 比 sel 还高）。
+而 `xgb_v2_neutral_8` 的"冠军"地位严重依赖 sel 集尾部的 epoch（2025-12 至 2026-02），在 held-out 上跌到第 8。
+新建的 robust ensembles 反而把不稳成员的方差累计放大，held-out 直接负值。
 
 ---
 
@@ -28,19 +43,22 @@
 | 排名 | 策略 | mean% | std% | t | hit | IC | IR |
 |---|---|---:|---:|---:|---:|---:|---:|
 | 1 | xgb_v2 K=30 | +0.80 | 2.78 | 1.77 | 55% | 0.027 | 0.227 |
-| **2** | **xgb_v2_neutral_8 ← 主提交** | **+0.75** | **1.96** | **2.36** | **61%** | 0.027 | 0.227 |
-| 3 | xgb_v2 K=50（前冠军） | +0.70 | 2.13 | 2.03 | 58% | 0.027 | 0.227 |
+| 2 | xgb_v2_neutral_8 | +0.75 | 1.96 | 2.36 | 61% | 0.027 | 0.227 |
+| **3** | **xgb_v2 K=50 ← 最终主提交** | **+0.70** | 2.13 | **2.03** | 58% | 0.027 | 0.227 |
 | 4 | xgb_v2_h4 | +0.61 | 1.94 | 1.95 | 58% | 0.036 | 0.294 |
 | 5 | xgb_v2_h4_neutral | +0.58 | 1.67 | 2.14 | 58% | 0.036 | 0.294 |
 | 6 | xgb_v2 K=80 | +0.56 | 1.61 | 2.14 | 58% | 0.027 | 0.227 |
 
 **起点 baseline**（参照）：mean +0.39%, std 1.74%, t=1.39, hit 58%
 
-最终对比：
-- mean: **+0.39% → +0.75% (+0.36pp, +92% relative)**
-- t-stat: **1.39 → 2.36 (跨过 p<0.05 显著线)**
-- worst window: **−3.71% → −2.97% (抗跌改善 20%)**
-- hit rate: **57.9% → 60.5%**
+最终对比（vs baseline，在完整 38 窗口）：
+- mean: **+0.39% → +0.70% (+0.31pp, +79% relative)**
+- t-stat: **1.39 → 2.03（跨过 p<0.05 显著线）**
+- worst window: **−3.71% → −2.80%（抗跌改善 25%）**
+
+**Held-out 检验（前 30 训 / 后 8 测）确认结果未过拟合**：
+- selection mean: +0.67%, held-out mean: **+0.84%**, shrink **+0.18%**（正向）
+- 19 个候选里唯一一个在 sel 和 hold 上都进 top 3 的
 
 ---
 
@@ -94,6 +112,22 @@
 
 9. **K=30 期望最高但不应押注**：t=1.77 没过显著线，单窗 worst −3.63%；K=50 是均值-显著性最优平衡。
 
+10. **Held-out 检验暴露了 backtest overfit**（第三轮）：第二轮 selected mean 排第 1 的 `xgb_v2_neutral_8` 在 held-out 上跌到第 8（shrink −0.29%），新建的 robust ensembles 集成 sel mean 排第 2 但 held-out 直接跌到第 18（shrink −0.77%）。集成 3 个相关基学习器时，sel 上的"幸运偏差"被累计放大成 hold 上的负值。
+
+11. **真正稳定的赢家是简单的 `xgb_v2`（默认）**：sel #3、hold #3、shrink **+0.18%**（held-out 比 sel 还高）。不依赖任何 sel-tuned trick，是 19 个候选里唯一一个在两个分组都进 top 3 的。
+
+12. **基本守则：模型/集成/超参越精细，过拟合风险越高**。对低 SNR 金融数据，越简单的模型越泛化得好。
+
+---
+
+## 三轮优化总览
+
+| 轮次 | 主要工作 | 主提交 | 决策依据 |
+|---|---|---|---|
+| 1 | baseline + walk-forward 框架 + features_v2 | xgb_v2 K=50 | 38 窗口 mean +0.70%，t 跨过 1.96 显著线 |
+| 2 | LambdaRank / LightGBM / 集成 / bagging / 多目标 / 聚类中性化 / 超参 sweep | xgb_v2_neutral_8 | 38 窗口 mean +0.75%，t=2.36 |
+| 3 | held-out 检验（前 30 训 / 后 8 测）发现轮 2 冠军过拟合 | **xgb_v2 K=50** | held-out shrink +0.18%，唯一稳定赢家 |
+
 ---
 
 ## 复现命令
@@ -103,17 +137,20 @@
 source .venv/bin/activate
 
 # 重新生成主提交（如果数据有更新）
-python make_submission.py --strategy xgb_v2_neutral_8 --top-k 50 \
-    --out submissions/final_neutral_8.csv
+python make_submission.py --strategy xgb_v2 --top-k 50 \
+    --out submissions/round3_final.csv
 
 # 跑完整 38 窗口对比任意策略
-python walkforward.py --strategy xgb_v2_neutral_8 --tag any_tag
+python walkforward.py --strategy xgb_v2 --tag any_tag
+
+# Held-out 鲁棒性检验
+python heldout_analysis.py
 
 # 校验提交
-python validate_submission.py submissions/final_neutral_8.csv
+python validate_submission.py submissions/round3_final.csv
 
 # 历史回测（评估窗口 04-15 ~ 04-21）
-python score_submission.py submissions/final_neutral_8.csv \
+python score_submission.py submissions/round3_final.csv \
     --start 20260415 --end 20260421
 ```
 
@@ -125,9 +162,11 @@ python score_submission.py submissions/final_neutral_8.csv \
 |---|---|
 | `features.py` | 原始 baseline 因子（14 维） |
 | `features_v2.py` | 丰富因子集（30 维 + 4 个目标，含每日缩尾 + 横截面 z-score） |
-| `strategies.py` | 统一 Strategy 接口 + 22 个注册策略 + 共享辅助函数（`build_portfolio`、`cluster_neutralize_scores`） |
+| `strategies.py` | 统一 Strategy 接口 + 24 个注册策略 + 共享辅助函数（`build_portfolio`、`cluster_neutralize_scores`） |
 | `walkforward.py` | 不重叠多窗回测调度器，落盘 `reports/<tag>_<时间戳>.{csv,json}` |
 | `make_submission.py` | 一行命令生成任意策略的提交 + 自动校验 |
+| `analyze_stability.py` | 把 walk-forward 历史按时间切 3 epochs，按"最差 epoch 表现"排序策略 |
+| `heldout_analysis.py` | 前 30 / 后 8 窗口 held-out 检验，识别过拟合 |
 | `baseline_xgboost.py` | 原始 baseline（保留作参照） |
 | `download_data.py` | 数据抓取（akshare） |
 | `validate_submission.py` | 提交格式约束校验 |
@@ -138,7 +177,7 @@ python score_submission.py submissions/final_neutral_8.csv \
 ## 比赛日清单（提交前）
 
 1. `python download_data.py --update` 抓最新 OHLCV
-2. `python make_submission.py --strategy xgb_v2_neutral_8 --top-k 50 --out submissions/<日期>.csv`
+2. `python make_submission.py --strategy xgb_v2 --top-k 50 --out submissions/<日期>.csv`
 3. `python validate_submission.py submissions/<日期>.csv`
 4. `head -10 submissions/<日期>.csv` 人工肉眼检查 top 持仓不奇怪
 5. 上传 `submissions/<日期>.csv`
