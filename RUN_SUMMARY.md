@@ -151,15 +151,29 @@
 
 12. **基本守则：模型/集成/超参越精细，过拟合风险越高**。对低 SNR 金融数据，越简单的模型越泛化得好。
 
+13. **第五轮神经网络归因实验（多任务 MLP）反向证明了树模型的优势**：3 层 MLP（128→128→64，GELU+dropout 0.2）共享 trunk + 4 个 horizon head，per-day rank-IC 损失。**38 窗口 mean −0.44%、hit 39%、t=−1.92**（接近显著负 alpha），但**验证集 IC 0.070、IR 2.24，分别是 xgb_v2 的 2.5× 和 10×**。这是教科书式的 "high IC ≠ high top-K return" 现象 —— MLP 学到了中段股票的精细排序但 top-K 系统性押在均值反转的极端动量票上。和 xgb_v2 等权 2:1 集成只把 v2 从 +0.70% 拉到 +0.23%，验证 "集成相关性低 ≠ 集成有用"。
+
+14. **MLP 在低 SNR + 短序列场景的本质问题**：(a) 150K 训练样本远低于 NN 真正发挥规模；(b) 树模型对极端特征值天然 saturate（split 后所有更极端输入得分相同），MLP 是特征线性会无限放大尾部 z-score 进 top-K；(c) A 股短期均值回归把"看着分对的"极端票变成 5d 反转。**结论：在禁止预训练 + 此规模数据下，GBM 仍是 SOTA**。
+
+### 第五轮 NN 实验结果一览
+
+| 策略 | 38窗口 mean% | std% | t | hit | val IC | val IR | hold mean% | shrink% |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **xgb_v2（冠军）** | **+0.70** | 2.13 | +2.03 | 58% | 0.027 | 0.23 | **+0.84** | **+0.18** |
+| mlp_v2 | −0.44 | 1.42 | −1.92 | 39% | **0.070** | **2.24** | −0.42 | +0.03 |
+| mlp_v2_small | −0.42 | 1.52 | −1.69 | 39% | 0.056 | 1.04 | +0.03 | +0.56 |
+| xgb_mlp_blend (2:1) | +0.23 | 1.39 | +1.00 | 55% | 0.049 | 0.78 | +0.22 | −0.005 |
+
 ---
 
-## 三轮优化总览
+## 五轮优化总览
 
 | 轮次 | 主要工作 | 主提交 | 决策依据 |
 |---|---|---|---|
 | 1 | baseline + walk-forward 框架 + features_v2 | xgb_v2 K=50 | 38 窗口 mean +0.70%，t 跨过 1.96 显著线 |
 | 2 | LambdaRank / LightGBM / 集成 / bagging / 多目标 / 聚类中性化 / 超参 sweep | xgb_v2_neutral_8 | 38 窗口 mean +0.75%，t=2.36 |
 | 4 | features_v3（指数相对因子）+ target winsorization 归因实验 | **xgb_v2 K=50（保留）** + xgb_v3_winsor 防守备份 | 新方法 hold mean 0.62% 不及 v2 的 0.84%；保留主提交但加备份 |
+| 5 | 多任务 MLP / xgb_mlp_blend 神经网络对照实验 | **xgb_v2 K=50（保留）** | MLP 38 窗口 mean −0.44%；xgb_mlp_blend 把 v2 拉到 +0.23%；NN 在此规模数据上有害 |
 | 3 | held-out 检验（前 30 训 / 后 8 测）发现轮 2 冠军过拟合 | **xgb_v2 K=50** | held-out shrink +0.18%���唯一稳定赢家 |
 
 ---
@@ -201,7 +215,8 @@ python score_submission.py submissions/round4_primary_xgb_v2.csv \
 | `features.py` | 原始 baseline 因子（14 维） |
 | `features_v2.py` | 丰富因子集（30 维 + 4 个目标，含每日缩尾 + 横截面 z-score） |
 | `features_v3.py` | v2 + 5 个指数相对因子（excess returns 1/5/20、outperform streak、price acceleration） |
-| `strategies.py` | 统一 Strategy 接口 + 26 个注册策略 + 共享辅助函数（`build_portfolio`、`cluster_neutralize_scores`、`XGBStrategyV3` 含可选 target winsor） |
+| `strategies.py` | 统一 Strategy 接口 + 29 个注册策略 + 共享辅助函数（`build_portfolio`、`cluster_neutralize_scores`、`XGBStrategyV3` 含可选 target winsor） |
+| `strategy_mlp.py` | 多任务 MLP（PyTorch CPU）：共享 trunk + 4 horizon head，per-day rank-IC 损失。第五轮对照证明 NN 在此规模数据上有害 |
 | `walkforward.py` | 不重叠多窗回测调度器，落盘 `reports/<tag>_<时间戳>.{csv,json}` |
 | `make_submission.py` | 一行命令生成任意策略的提交 + 自动校验 |
 | `analyze_stability.py` | 把 walk-forward 历史按时间切 3 epochs，按"最差 epoch 表现"排序策略 |
