@@ -772,6 +772,27 @@ STRATEGIES: dict[str, Callable[[], Strategy]] = {
     "xgb_ranker_v2": lambda: XGBRankerStrategy(),
     "lgb_v2": lambda: LGBStrategyV2(),
     "ensemble_v2": lambda: EnsembleStrategy(),
+    # ROUND 5: multi-task MLP with shared trunk + 4 horizon heads.
+    # Lazy import keeps torch optional (skipped if not installed).
+    "mlp_v2": lambda: __import__("strategy_mlp").MLPStrategy(),
+    # Smaller / more regularised variant: half the trunk width, higher dropout.
+    "mlp_v2_small": lambda: __import__("strategy_mlp").MLPStrategy(
+        name="mlp_v2_small",
+        hidden=(64, 64, 32),
+        dropout=0.3,
+    ),
+    # Cross-model ensemble: rank-average xgb_v2 (proven dominant tree learner)
+    # with the MLP.  If the MLP brings a different bias, this should show
+    # held-out gains; if MLP is just noise, the blend regresses gracefully
+    # toward xgb_v2 alone since xgb is anchored at 2x weight.
+    "xgb_mlp_blend": lambda: EnsembleStrategy(
+        name="xgb_mlp_blend",
+        members=(
+            XGBStrategyV2(),
+            __import__("strategy_mlp").MLPStrategy(),
+        ),
+        weights=(2.0, 1.0),
+    ),
     # Multi-seed bagging of xgb_v2: same model, different random seeds.
     # Lowers variance without sacrificing mean, since each member has ~equal
     # alpha but different idiosyncratic noise.
