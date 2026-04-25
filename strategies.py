@@ -91,6 +91,66 @@ def build_portfolio(scores: pd.Series, top_k: int = DEFAULT_TOP_K) -> pd.Series:
     return w
 
 
+def cluster_neutralize_scores(
+    scores: pd.Series,
+    prices: pd.DataFrame,
+    as_of: pd.Timestamp,
+    n_clusters: int = 10,
+    lookback_days: int = 60,
+    seed: int = 42,
+) -> pd.Series:
+    """De-mean each stock's score by its cluster mean.
+
+    We don't have a pre-computed sector map, so we cluster stocks by their
+    realised return pattern in the trailing window before `as_of`.  Stocks
+    that move together end up in the same bucket; subtracting the bucket
+    mean removes systematic over-/under-pricing of any single style or
+    sector so the model's rank signal can't lever the whole portfolio onto
+    one factor.
+
+    Returns a new Series with the same index as `scores`; if there is not
+    enough history to fit clusters we return the original scores unchanged.
+    """
+    from sklearn.cluster import KMeans
+
+    end = pd.Timestamp(as_of)
+    start = end - pd.Timedelta(days=lookback_days * 2)  # generous wall-clock
+    win = prices[(prices["date"] < end) & (prices["date"] >= start)]
+    if win.empty:
+        return scores
+
+    # Build (stocks x days) returns matrix.  Use pct_chg if present else compute.
+    if "pct_chg" in win.columns:
+        ret_col = "pct_chg"
+    else:
+        win = win.sort_values(["stock_code", "date"]).copy()
+        win["pct_chg"] = win.groupby("stock_code")["close"].pct_change() * 100.0
+        ret_col = "pct_chg"
+
+    pivot = (
+        win.pivot_table(index="stock_code", columns="date", values=ret_col)
+        .dropna(axis=0, thresh=int(lookback_days * 0.7))
+        .fillna(0.0)
+    )
+    if len(pivot) < n_clusters * 3:
+        return scores
+
+    common = pivot.index.intersection(scores.index)
+    if len(common) < n_clusters * 3:
+        return scores
+
+    X = pivot.loc[common].to_numpy()
+    km = KMeans(n_clusters=n_clusters, n_init=10, random_state=seed)
+    labels = pd.Series(km.fit_predict(X), index=common, name="cluster")
+
+    # Demean scores within each cluster.
+    s = scores.copy()
+    s_in = s.loc[common]
+    means = s_in.groupby(labels).transform("mean")
+    s.loc[common] = s_in - means
+    return s
+
+
 # ----------------------------------------------------------------------------
 # Strategy interface
 # ----------------------------------------------------------------------------
@@ -550,6 +610,51 @@ class EnsembleStrategy:
         return StrategyResult(weights=weights, diagnostics=diag)
 
 
+# ----------------------------------------------------------------------------
+# Cluster-neutralised wrapper: same underlying scores, but de-meaned by
+# return-correlation cluster before portfolio construction.
+# ----------------------------------------------------------------------------
+
+@dataclass
+class ClusterNeutralWrapper:
+    """Wraps a base strategy and neutralises its raw scores against
+    return-correlation clusters before building the top-K portfolio.
+
+    Uses the *panel itself* as the price source (since the v2 panel already
+    has stock_code/date/pct_chg).  This keeps the wrapper drop-in
+    compatible with the walk-forward framework.
+    """
+    name: str = "xgb_v2_neutral"
+    base: "Strategy" = field(default_factory=lambda: XGBStrategyV2())
+    n_clusters: int = 10
+    lookback_days: int = 60
+
+    def build_panel(self, prices, index_df):
+        return self.base.build_panel(prices, index_df)
+
+    def fit_predict(self, panel, as_of, top_k=DEFAULT_TOP_K):
+        scores, diag = self.base.fit_predict_scores(panel, as_of)
+        # Reuse the panel as the price source — has stock_code/date/pct_chg.
+        cols = ["stock_code", "date"]
+        ret_col = "pct_chg" if "pct_chg" in panel.columns else None
+        if ret_col is None:
+            # Fallback: derive from close.
+            prices = panel[["stock_code", "date", "close"]].copy()
+        else:
+            prices = panel[cols + [ret_col]].copy()
+        neutralised = cluster_neutralize_scores(
+            scores, prices, as_of,
+            n_clusters=self.n_clusters,
+            lookback_days=self.lookback_days,
+        )
+        weights = build_portfolio(neutralised, top_k=top_k)
+        diag = {**diag,
+                "neutral_n_clusters": self.n_clusters,
+                "neutral_lookback": self.lookback_days,
+                "neutral_n_neutralised": int(neutralised.notna().sum())}
+        return StrategyResult(weights=weights, diagnostics=diag)
+
+
 # Register strategies here so the CLI can look them up by --strategy <name>.
 STRATEGIES: dict[str, Callable[[], Strategy]] = {
     "xgb_baseline": lambda: XGBStrategy(),
@@ -630,20 +735,52 @@ STRATEGIES: dict[str, Callable[[], Strategy]] = {
         n_estimators=1200, max_depth=4, learning_rate=0.025,
         colsample_bytree=0.7,
     ),
-    # Multi-target + multi-seed (8 members).  Doubles compute but in theory
-    # combines y-noise and x-noise diversification.
-    "xgb_v2_multi_target_bag": lambda: EnsembleStrategy(
-        name="xgb_v2_multi_target_bag",
-        members=(
-            XGBStrategyV2(target_column="target_5d", seed=42),
-            XGBStrategyV2(target_column="target_5d", seed=2026),
-            XGBStrategyV2(target_column="target_3d", seed=42),
-            XGBStrategyV2(target_column="target_3d", seed=2026),
-            XGBStrategyV2(target_column="target_10d", seed=42),
-            XGBStrategyV2(target_column="target_10d", seed=2026),
-            XGBStrategyV2(target_column="target_5d_sharpe", seed=42),
-            XGBStrategyV2(target_column="target_5d_sharpe", seed=2026),
+    # ---- cluster-neutralised variants ----
+    # Wraps xgb_v2 / xgb_v2_h4 / multi_target with KMeans neutralisation
+    # over the trailing-60d return matrix.  Removes "all picks are
+    # small-cap growth" style concentration without needing an external
+    # sector table.
+    "xgb_v2_neutral": lambda: ClusterNeutralWrapper(
+        name="xgb_v2_neutral",
+        base=XGBStrategyV2(),
+        n_clusters=10,
+    ),
+    "xgb_v2_h4_neutral": lambda: ClusterNeutralWrapper(
+        name="xgb_v2_h4_neutral",
+        base=XGBStrategyV2(
+            n_estimators=1200, max_depth=4,
+            learning_rate=0.025, colsample_bytree=0.7,
         ),
-        weights=(2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+        n_clusters=10,
+    ),
+    "xgb_v2_neutral_8": lambda: ClusterNeutralWrapper(
+        name="xgb_v2_neutral_8",
+        base=XGBStrategyV2(),
+        n_clusters=8,
+    ),
+    "xgb_v2_neutral_15": lambda: ClusterNeutralWrapper(
+        name="xgb_v2_neutral_15",
+        base=XGBStrategyV2(),
+        n_clusters=15,
+    ),
+    # Best-of-IC blend: combine the three highest-IR base learners we have:
+    #   - xgb_v2 default        (mean champ, IR 0.227)
+    #   - xgb_v2 h4 settings    (best single IR among hp sweep, 0.294)
+    #   - xgb_v2 sharpe target  (the IR-boosting member of multi_target, 0.345)
+    # Hypothesis: rank-averaging three high-IR models with different biases
+    # should keep the IR advantage *and* drag mean back up vs multi_target's
+    # 0.48% (because we drop the mean-dragging 3d/10d horizon members).
+    # 2x weight on the default xgb_v2 anchors mean toward the champion.
+    "best_blend": lambda: EnsembleStrategy(
+        name="best_blend",
+        members=(
+            XGBStrategyV2(),
+            XGBStrategyV2(
+                n_estimators=1200, max_depth=4,
+                learning_rate=0.025, colsample_bytree=0.7,
+            ),
+            XGBStrategyV2(target_column="target_5d_sharpe"),
+        ),
+        weights=(2.0, 1.0, 1.0),
     ),
 }
