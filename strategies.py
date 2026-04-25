@@ -37,6 +37,7 @@ from features import (
     build_features as build_features_v1,
 )
 import features_v2
+import features_v3
 
 MIN_STOCKS = 30
 MAX_WEIGHT = 0.10
@@ -336,6 +337,82 @@ class XGBStrategyV2(XGBStrategy):
 
     def _prediction_frame_fn(self):
         return features_v2.prediction_frame
+
+
+# ----------------------------------------------------------------------------
+# v3: same XGBoost recipe over the v3 feature set (v2 + 5 index-relative
+# factors).  Optionally clips the training target to [q01, q99] per day so
+# extreme winners/losers don't drag the regression toward chasing tail noise.
+# ----------------------------------------------------------------------------
+
+@dataclass
+class XGBStrategyV3(XGBStrategyV2):
+    name: str = "xgb_v3"
+    feature_columns: tuple = tuple(features_v3.ALL_FEATURES)
+    target_column: str = features_v3.TARGET_COLUMN
+
+    # When != (0.0, 1.0), per-day winsorize the training target between these
+    # quantiles before fitting.  Default (0.0, 1.0) is a no-op so plain v3
+    # behaviour matches v2 exactly except for the new feature columns.
+    target_winsor_q: tuple = (0.0, 1.0)
+
+    def build_panel(self, prices: pd.DataFrame, index_df: pd.DataFrame) -> pd.DataFrame:
+        return features_v3.build_features(prices, index_df)
+
+    def _training_frame_fn(self):
+        from functools import partial
+        return partial(features_v3.training_frame, target=self.target_column)
+
+    def _prediction_frame_fn(self):
+        return features_v3.prediction_frame
+
+    def fit_predict_scores(self, panel, as_of):
+        # Override only to support optional per-day target winsorization.
+        feats = list(self.feature_columns)
+        tgt = self.target_column
+        train_df, val_df, train_end, val_start = _train_val_split(
+            panel, as_of, self.val_days, self.embargo,
+            training_frame_fn=self._training_frame_fn(),
+        )
+
+        winsor_active = self.target_winsor_q != (0.0, 1.0)
+        if winsor_active:
+            lo_q, hi_q = self.target_winsor_q
+            by_d = train_df.groupby("date")[tgt]
+            lo = by_d.transform(lambda x: x.quantile(lo_q))
+            hi = by_d.transform(lambda x: x.quantile(hi_q))
+            train_df = train_df.copy()
+            train_df[tgt] = train_df[tgt].clip(lower=lo, upper=hi)
+
+        model = self._model()
+        model.fit(
+            train_df[feats], train_df[tgt],
+            eval_set=[(val_df[feats], val_df[tgt])],
+            verbose=False,
+        )
+
+        val_pred = model.predict(val_df[feats])
+        val_ic = rank_ic(
+            val_df[tgt].to_numpy(), val_pred, val_df["date"].to_numpy()
+        )
+
+        pred_df = self._prediction_frame_fn()(panel, as_of=as_of)
+        if pred_df.empty:
+            raise RuntimeError(f"No prediction rows on {as_of.date()}")
+        pred_df = pred_df.assign(score=model.predict(pred_df[feats]))
+        scores = pred_df.set_index("stock_code")["score"]
+        diag = {
+            "val_ic": val_ic,
+            "n_train": len(train_df),
+            "n_val": len(val_df),
+            "n_pred": len(pred_df),
+            "n_features": len(feats),
+            "train_end": train_end.date().isoformat(),
+            "val_start": val_start.date().isoformat(),
+            "best_iter": int(getattr(model, "best_iteration", -1) or -1),
+            "target_winsor": tuple(self.target_winsor_q),
+        }
+        return scores, diag
 
 
 # ----------------------------------------------------------------------------
@@ -666,6 +743,11 @@ class ClusterNeutralWrapper:
 STRATEGIES: dict[str, Callable[[], Strategy]] = {
     "xgb_baseline": lambda: XGBStrategy(),
     "xgb_v2": lambda: XGBStrategyV2(),
+    # ROUND 4: v3 features (v2 + 5 index-relative factors).  Same model,
+    # same hyperparams as xgb_v2 -- only the feature set changes.
+    "xgb_v3": lambda: XGBStrategyV3(),
+    # v3 + per-day target winsorization at [1%, 99%] -- noise robustness.
+    "xgb_v3_winsor": lambda: XGBStrategyV3(target_winsor_q=(0.01, 0.99)),
     "xgb_ranker_v2": lambda: XGBRankerStrategy(),
     "lgb_v2": lambda: LGBStrategyV2(),
     "ensemble_v2": lambda: EnsembleStrategy(),
