@@ -765,14 +765,54 @@ class XGBStrategyK10(XGBStrategyV2):
         return StrategyResult(weights=weights, diagnostics=diag)
 
 
+@dataclass
+class XGBStrategyConcentrated(XGBStrategyV2):
+    """v2 model with parametrized equal-weight K (for K-sweep analysis)."""
+    name: str = "xgb_v2_concentrated"
+    fixed_k: int = 15
+
+    def fit_predict(self, panel, as_of, top_k=None):
+        scores, diag = self.fit_predict_scores(panel, as_of)
+        weights = build_portfolio_equal(scores, top_k=self.fixed_k)
+        diag["portfolio_type"] = f"v2_equal_k{self.fixed_k}"
+        return StrategyResult(weights=weights, diagnostics=diag)
+
+
+@dataclass
+class XGBStrategyV3WinsorConcentrated(XGBStrategyV3):
+    """v3_winsor model (66% hit rate) with parametrized equal-weight K.
+
+    Idea: at small K, picking quality matters more than mean alpha.
+    v3_winsor has the highest hit rate of any model we built (66%),
+    so concentrating its picks may beat concentrating xgb_v2's picks.
+    """
+    name: str = "xgb_v3_winsor_concentrated"
+    fixed_k: int = 15
+    target_winsor_q: tuple = (0.01, 0.99)
+
+    def fit_predict(self, panel, as_of, top_k=None):
+        scores, diag = self.fit_predict_scores(panel, as_of)
+        weights = build_portfolio_equal(scores, top_k=self.fixed_k)
+        diag["portfolio_type"] = f"v3_winsor_equal_k{self.fixed_k}"
+        return StrategyResult(weights=weights, diagnostics=diag)
+
+
 # Register strategies here so the CLI can look them up by --strategy <name>.
 STRATEGIES: dict[str, Callable[[], Strategy]] = {
     "xgb_baseline": lambda: XGBStrategy(),
     "xgb_v2": lambda: XGBStrategyV2(),
     # K=10 concentrated portfolio (10 stocks x 10% each)
     "xgb_v2_k10": lambda: XGBStrategyK10(),
-    # K=20 medium concentration (5% each)
-    "xgb_v2_k20": lambda: XGBStrategyV2(),  # use --top-k 20 flag
+    # ROUND 6 aggressive K-sweep with consistent equal-weight portfolios
+    "xgb_v2_k15": lambda: XGBStrategyConcentrated(name="xgb_v2_k15", fixed_k=15),
+    "xgb_v2_k25": lambda: XGBStrategyConcentrated(name="xgb_v2_k25", fixed_k=25),
+    # v3_winsor (66% hit rate) at aggressive K
+    "xgb_v3_winsor_k10": lambda: XGBStrategyV3WinsorConcentrated(
+        name="xgb_v3_winsor_k10", fixed_k=10),
+    "xgb_v3_winsor_k15": lambda: XGBStrategyV3WinsorConcentrated(
+        name="xgb_v3_winsor_k15", fixed_k=15),
+    "xgb_v3_winsor_k20": lambda: XGBStrategyV3WinsorConcentrated(
+        name="xgb_v3_winsor_k20", fixed_k=20),
     # ROUND 4: v3 features (v2 + 5 index-relative factors).  Same model,
     # same hyperparams as xgb_v2 -- only the feature set changes.
     "xgb_v3": lambda: XGBStrategyV3(),
