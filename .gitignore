@@ -1,11 +1,44 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
 .venv/
+venv/
+env/
+
+# Notebooks
 .ipynb_checkpoints/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
 *.log
+
+# Project outputs
 submissions/
 trading/
+models/
+artifacts/
+runs/
+mlruns/
+wandb/
+
+# Data (rebuildable via download_data.py)
+data/prices.parquet
+data/index.parquet
+data/constituents.csv
+data/*.parquet
+data/*.csv
+
+# Editor / tooling
+.vscode/
+.idea/
+*.swp
+
+# Claude Code
 .cc-agent/
 .claude/
 .mcp.json
