@@ -40,8 +40,8 @@ All deadlines are **China Standard Time (UTC+8)**.
 | Tue 2026-04-21 | Competition launches. Data snapshot available. |
 | Mon 2026-05-04 23:59 | **Submission 1 deadline** (Gradescope) |
 | Wed–Fri 2026-05-06 to 05-08 | **Evaluation window 1** (3 trading days) |
-| Sun 2026-05-10 23:59 | **Submission 2 deadline** (Gradescope) and |
-| Mon 2026-05-11 23:59 | Report deadline |
+| Sun 2026-05-10 23:59 | **Submission 2 deadline** (Gradescope) |
+| Mon 2026-05-11 23:59 | **Report deadline** |
 | Mon–Fri 2026-05-11 to 05-15 | **Evaluation window 2** (5 trading days) |
 
 
