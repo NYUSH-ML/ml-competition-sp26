@@ -1,0 +1,19 @@
+{
+  "strategy": "xgb_v2_k15",
+  "args": {
+    "strategy": "xgb_v2_k15",
+    "prices": "/vercel/share/v0-project/data/prices.parquet",
+    "index": "/vercel/share/v0-project/data/index.parquet",
+    "horizon": 5,
+    "stride": 5,
+    "n_windows": null,
+    "start": null,
+    "end": null,
+    "min_history": 120,
+    "top_k": 50,
+    "tag": "xgb_v2_k15_full",
+    "no_save": false,
+    "debug": false
+  },
+  "summary": {}
+}
