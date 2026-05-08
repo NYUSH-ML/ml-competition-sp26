@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-This project iterated through **seven rounds** of experimentation across more than 35 candidate strategies on the CSI500 Spring 2026 stock-selection task. Despite extensive attempts at feature engineering, model ensembling, neural networks, concentrated portfolio construction, time-decay sample weighting, and dynamic K selection, the simplest strategy from Round 1 — XGBoost trained on 35 cross-sectionally normalized features with the standard rank-weighted top-50 portfolio — emerged as the most robust performer when judged by both walk-forward statistics and held-out validation.
+This project iterated through **eight rounds** of experimentation across more than 35 candidate strategies on the CSI500 Spring 2026 stock-selection task. Despite extensive attempts at feature engineering (including sector-relative factors built from Shenwan industry classification), model ensembling, neural networks, concentrated portfolio construction, time-decay sample weighting, and dynamic K selection, the simplest strategy from Round 1 — XGBoost trained on 35 cross-sectionally normalized features with the standard rank-weighted top-50 portfolio — emerged as the most robust performer when judged by both walk-forward statistics and held-out validation.
 
 **Key headline numbers (40-window walk-forward, refreshed through 2026-05-08):**
 
@@ -18,10 +18,11 @@ This project iterated through **seven rounds** of experimentation across more th
 |---|---:|---:|---:|---:|---:|---:|
 | Baseline (provided) | +0.39% | 1.74% | +1.39 | 58% | +0.62% | +0.29% |
 | **XGB v2 K=50 (SHIPPED)** | **+0.86%** | 2.16% | **+2.51** | 60% | **+1.32%** | **+0.62%** |
-| XGB v2 + time-decay (rejected) | +0.46% | 1.99% | +1.47 | 53% | +0.98% | +0.69% |
-| XGB v2 + dynamic K (rejected) | +0.79% | 2.19% | +2.28 | 60% | +1.27% | +0.65% |
+| XGB v2 + time-decay (rejected, R7) | +0.46% | 1.99% | +1.47 | 53% | +0.98% | +0.69% |
+| XGB v2 + dynamic K (rejected, R7) | +0.79% | 2.19% | +2.28 | 60% | +1.27% | +0.65% |
+| XGB v4 + sector features (rejected, R8) | +0.51% | 2.06% | +1.57 | 53% | +0.27% | −0.32% |
 
-The shipped strategy improves over the provided baseline by **+0.47 percentage points (>2x relative)** with t-statistic well above the 1.96 significance threshold. Three single-knob variants tested in Round 7 were all rejected based on held-out comparison.
+The shipped strategy improves over the provided baseline by **+0.47 percentage points (>2x relative)** with t-statistic well above the 1.96 significance threshold. **Submission 1 received 3.9 / 5.0 on the public leaderboard** (measured backtest excess return +2.56% over May 6-8, 75th percentile of historical 40-window distribution). All Round 7 and Round 8 variants — explicitly designed to bridge the gap to top-leaderboard scores — were rejected by held-out comparison.
 
 The single most important methodological lesson of the project is that **selecting strategies on backtested mean alone produces overfit choices**. The held-out validation framework introduced in Round 3 reversed two consecutive "winners" (one in Round 2, one in Round 4), each of which had higher backtest mean but lower out-of-time mean than the eventual choice.
 
@@ -397,9 +398,9 @@ The whole process takes roughly 10 minutes door-to-door.
 
 ---
 
-## 5. Empirical Findings Compiled (16 Lessons)
+## 5. Empirical Findings Compiled (17 Lessons)
 
-Across seven rounds, the following empirical findings emerged. Each is worth retaining for future quantitative finance work in this regime.
+Across eight rounds, the following empirical findings emerged. Each is worth retaining for future quantitative finance work in this regime.
 
 1. **Cross-sectional z-scoring of features per day is essential.** Without it, models learn calendar effects rather than relative alpha.
 2. **Daily winsorization at [1%, 99%] on features is non-negotiable.** Even a single un-clipped extreme observation can destabilize gradient boosting.
@@ -417,6 +418,7 @@ Across seven rounds, the following empirical findings emerged. Each is worth ret
 14. **K-sweep confirms textbook diversification bound.** Sharpe ratio increases monotonically with K up to ~50 in this regime. Apparent mean improvement at K=10-20 is driven by a single outlier window; median spread vs K=50 over recent windows is negative for K=10 and K=20.
 15. **Explicit time-decay sample weighting hurts.** Half-life 180 days (a typical choice in FinML literature) reduced mean excess by 0.40 percentage points and dropped t-stat below 1.96. XGBoost's iterative tree-building, combined with the 90-day validation window, already implicitly down-weights stale samples. Adding explicit decay over-rotates toward the most recent regime and reduces cross-sectional generalization.
 16. **Score-distribution-driven dynamic K is a wash.** The chosen K averaged 56 (median 53) across 40 windows, with 7 weeks at the floor of 30 and 1 at the ceiling of 80. Marginal mean drop (-0.07pp) is within sampling noise. Adaptive concentration based on signal strength sounds intuitive but produces no robust gain on this dataset.
+17. **Sector-relative features are a 5-day-horizon contra-indicator.** Adding 5 sector-relative factors (within-sector relative strength, sector excess, sector momentum) across 31 SW sectors gave validation rank IC essentially identical to v2 (0.031 vs 0.027), but the resulting top-K portfolio underperformed v2 in 23 of 40 windows with mean spread -0.35pp and lost statistical significance (t-stat 1.57 vs 2.51). The largest single-window loss was -5.04pp on a sector-rotation-reversal week (2026-03-19). Mechanism: in A-shares at 5-day horizon, "leading stock of a hot sector" mean-reverts harder than the average stock, so sector-momentum-style features push the top-K toward systematic reversal candidates. Same dynamic as the Round 5 MLP failure.
 
 ---
 
@@ -431,6 +433,7 @@ Across seven rounds, the following empirical findings emerged. Each is worth ret
 | 5 | Multi-task MLP (PyTorch) negative-result control | **xgb_v2 K=50** | +0.18% | MLP −0.44% mean despite IC 2.5x stronger; xgb_mlp_blend pulled down to +0.23% |
 | 6 | K-sweep (K=10, 15, 20, 25) lottery test | **xgb_v2 K=50** | +0.18% | K-sweep gain driven by single outlier week; K=50 best mean and median once outlier excluded |
 | 7 | Time-decay sample weighting + dynamic K (data refreshed to 2026-05-08) | **xgb_v2 K=50 (refreshed)** | +0.62% | All 3 variants underperformed refreshed baseline; baseline improved to mean +0.86%, t=2.51 |
+| 8 | Sector-relative features (5 SW industry factors, 31 sectors, 100% coverage) | **xgb_v2 K=50** | +0.62% | xgb_v4 mean +0.51% (-0.35pp), t=1.57 (lost significance), beat v2 in only 17/40 windows; "leader of hot sector" mean-reverts at 5d horizon |
 
 ---
 
