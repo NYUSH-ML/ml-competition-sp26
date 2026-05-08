@@ -38,6 +38,7 @@ from features import (
 )
 import features_v2
 import features_v3
+import features_v4
 
 MIN_STOCKS = 30  # Competition rule: >= 30 stocks required
 MAX_WEIGHT = 0.10
@@ -420,6 +421,29 @@ class XGBStrategyV3(XGBStrategyV2):
             "target_winsor": tuple(self.target_winsor_q),
         }
         return scores, diag
+
+
+# ----------------------------------------------------------------------------
+# v4: same XGBoost recipe over the v4 feature set (v2 + 5 SECTOR-RELATIVE
+# factors built from SW industry classification).  Same training procedure
+# as v2 -- the only thing that changes is the input feature vector.
+# ----------------------------------------------------------------------------
+
+@dataclass
+class XGBStrategyV4(XGBStrategyV2):
+    name: str = "xgb_v4"
+    feature_columns: tuple = tuple(features_v4.ALL_FEATURES)
+    target_column: str = features_v4.TARGET_COLUMN
+
+    def build_panel(self, prices: pd.DataFrame, index_df: pd.DataFrame) -> pd.DataFrame:
+        return features_v4.build_features(prices, index_df)
+
+    def _training_frame_fn(self):
+        from functools import partial
+        return partial(features_v4.training_frame, target=self.target_column)
+
+    def _prediction_frame_fn(self):
+        return features_v4.prediction_frame
 
 
 # ----------------------------------------------------------------------------
@@ -926,6 +950,8 @@ class XGBStrategyDecayDynK(XGBStrategyDecay):
 STRATEGIES: dict[str, Callable[[], Strategy]] = {
     "xgb_baseline": lambda: XGBStrategy(),
     "xgb_v2": lambda: XGBStrategyV2(),
+    # ROUND 8: v4 = v2 features + 5 SW sector-relative factors
+    "xgb_v4": lambda: XGBStrategyV4(),
     # ROUND 6 single-knob ablations + combined
     "xgb_v2_decay": lambda: XGBStrategyDecay(),                # time-decay only
     "xgb_v2_dynk": lambda: XGBStrategyDynK(),                  # dynamic K only

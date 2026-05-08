@@ -298,6 +298,37 @@ After incorporating two more weeks of fresh market data (extending the dataset f
 
 **Submission 2 deliverable:** `submissions/submission2.csv`, generated using `xgb_v2` on data through 2026-05-08, top-50 rank-weighted with iterative 10% cap. Overlap with Submission 1 (generated 2026-04-21): 16 of 50 stocks (32%) — the model has rotated meaningfully on the newer features, as expected for a 2-week gap.
 
+### 3.8 Round 8: Sector-Relative Features (Post-Submission-1 Public Score)
+
+**Motivation.** Submission 1 received a public-leaderboard score of **3.9 / 5.0**. Backtest analysis confirmed the model achieved +2.56% excess return over the May 6-8 evaluation window (75th percentile of historical 40-window distribution), but this was insufficient for top placement. We hypothesized the gap to top-tier scores was that the existing 35-feature set is built entirely from price and volume — public information shared by all participants — while top-scoring teams were likely supplementing with sector-relative information that captures industry rotation, the dominant driver of A-share short-horizon returns.
+
+**Implementation.** Added five new features built from akshare's Shenwan (SW) industry classification (`stock_industry_clf_hist_sw`, 100% CSI500 coverage across 31 sectors, median 11 stocks per sector):
+
+1. `sector_excess_5d` — stock 5d return minus equal-weighted sector 5d return
+2. `sector_excess_20d` — stock 20d return minus equal-weighted sector 20d return
+3. `sector_outperf_pct_20d` — fraction of last 20 days the stock beat its sector
+4. `sector_momentum_5d` — sector's own 5d return (so the model knows which sectors are hot)
+5. `sector_relstrength_5d` — within-sector pct rank of 5d return (0 = worst in sector, 1 = best)
+
+The within-sector relative-strength rank is the genuinely novel signal: it cannot be derived from any other feature in the v2 set. Implementation lives in `features_v4.py` and `XGBStrategyV4` in `strategies.py`; sectors with fewer than 5 CSI500 stocks are folded into a single "OT" bucket to keep sector indices statistically stable.
+
+**Smoke test (3 windows).** Mean +2.30%, validation rank IC +0.157 (5x baseline), 100% hit rate. Promising — but N=3 is far too small to act on.
+
+**Full 40-window walk-forward result:**
+
+| Strategy | Mean | t-stat | Hit | Held-out (8w) | Shrink |
+|---|---:|---:|---:|---:|---:|
+| xgb_v2 (baseline) | +0.86% | +2.51 | 60.0% | +1.32% | **+0.62%** |
+| **xgb_v4 (sector) — REJECTED** | **+0.51%** | **+1.57** | 52.5% | +0.27% | **−0.32%** |
+
+**Per-window verdict.** v4 beat v2 in only 17 of 40 windows (42% — worse than coin-flip). Median spread v4 minus v2 was −0.57pp. The largest single-window loss was **2026-03-19 at −5.04pp**, which decomposes cleanly as a sector-rotation-reversal week: v4 had successfully learned "this stock is leading its hot sector," but at A-shares' 5-day horizon, hot sectors systematically mean-revert, so v4's top-K picks got caught in the reversal.
+
+**Comparison to Round 5 MLP failure.** The mechanism is identical to the multi-task MLP that had 2.5x baseline's val IC but produced negative portfolio returns. A feature set that captures real cross-sectional ordering can still hurt portfolio performance when the features push the model toward stocks that systematically mean-revert at the target horizon. Validation rank IC of v4 (0.031) is essentially identical to v2 (0.027), confirming the model learns at the same rank-correlation level — it just selects extreme picks that mean-revert harder.
+
+**Decision.** Reject `xgb_v4`. Continue shipping `xgb_v2` for Submission 2. The held-out judgment rule has now rejected new candidates in **four consecutive rounds** (Rounds 4, 5, 7, 8). The negative result is itself substantive: it documents empirically that **"leader of hot sector" mean-reverts at 5-day horizon in CSI500**, which means sector-momentum-style features are a contra-indicator for short-horizon top-K portfolio construction.
+
+**Engineering note.** All v4 infrastructure (industry mapping, sector index construction, smoke tests) works correctly — the rejection is purely about the finance, not the implementation. The code is preserved in `features_v4.py` and `strategies.py` for reproducibility.
+
 ---
 
 ## 4. Final Decision and Deliverables
