@@ -6,6 +6,7 @@ __pycache__/
 *.log
 submissions/
 !submissions/submission1.csv
+!submissions/submission2.csv
 trading/
 .cc-agent/
 .claude/

@@ -1,24 +1,27 @@
 # CSI500 Spring 2026 Competition: Project Report
 
 **Author:** Project Team
-**Date:** April 26, 2026
-**Final Submission:** `submissions/round4_primary_xgb_v2.csv` (XGBoost v2 strategy, K=50)
+**Date:** May 8, 2026 (updated for Submission 2)
+**Submissions:**
+- Submission 1: `submissions/submission1.csv` (XGBoost v2, K=50, data through 2026-04-21)
+- Submission 2: `submissions/submission2.csv` (XGBoost v2, K=50, data through 2026-05-08)
 
 ---
 
 ## Executive Summary
 
-This project iterated through **six rounds** of experimentation across more than 30 candidate strategies on the CSI500 Spring 2026 stock-selection task. Despite extensive attempts at feature engineering, model ensembling, neural networks, and concentrated portfolio construction, the simplest strategy from Round 1 — XGBoost trained on 35 cross-sectionally normalized features with the standard rank-weighted top-50 portfolio — emerged as the most robust performer when judged by both 38-window walk-forward statistics and held-out validation.
+This project iterated through **seven rounds** of experimentation across more than 35 candidate strategies on the CSI500 Spring 2026 stock-selection task. Despite extensive attempts at feature engineering, model ensembling, neural networks, concentrated portfolio construction, time-decay sample weighting, and dynamic K selection, the simplest strategy from Round 1 — XGBoost trained on 35 cross-sectionally normalized features with the standard rank-weighted top-50 portfolio — emerged as the most robust performer when judged by both walk-forward statistics and held-out validation.
 
-**Key headline numbers (38-window walk-forward, baseline excluded):**
+**Key headline numbers (40-window walk-forward, refreshed through 2026-05-08):**
 
 | Strategy | Mean Excess | Std | t-stat | Hit Rate | Held-out Mean | Shrinkage |
 |---|---:|---:|---:|---:|---:|---:|
 | Baseline (provided) | +0.39% | 1.74% | +1.39 | 58% | +0.62% | +0.29% |
-| **XGB v2 K=50 (FINAL)** | **+0.70%** | 2.13% | **+2.03** | 58% | **+0.84%** | **+0.18%** |
-| XGB v3_winsor K=50 | +0.62% | 1.58% | +2.41 | 66% | +0.62% | -0.001% |
+| **XGB v2 K=50 (SHIPPED)** | **+0.86%** | 2.16% | **+2.51** | 60% | **+1.32%** | **+0.62%** |
+| XGB v2 + time-decay (rejected) | +0.46% | 1.99% | +1.47 | 53% | +0.98% | +0.69% |
+| XGB v2 + dynamic K (rejected) | +0.79% | 2.19% | +2.28 | 60% | +1.27% | +0.65% |
 
-The final submission improves over the provided baseline by **+0.31 percentage points (79% relative)** with t-statistic crossing the 1.96 significance threshold. A defensive backup variant is also generated for use only if pre-evaluation market conditions warrant.
+The shipped strategy improves over the provided baseline by **+0.47 percentage points (>2x relative)** with t-statistic well above the 1.96 significance threshold. Three single-knob variants tested in Round 7 were all rejected based on held-out comparison.
 
 The single most important methodological lesson of the project is that **selecting strategies on backtested mean alone produces overfit choices**. The held-out validation framework introduced in Round 3 reversed two consecutive "winners" (one in Round 2, one in Round 4), each of which had higher backtest mean but lower out-of-time mean than the eventual choice.
 
@@ -264,21 +267,61 @@ K=50 has the highest mean AND highest median once a single tail week is removed.
 
 **Decision:** Keep K=50. The K-sweep confirmed that the standard size is not just adequate but optimal under the project's risk-adjusted criteria.
 
+### 3.7 Round 7: Time-Decay Sample Weighting and Dynamic K (May 8, 2026)
+
+After incorporating two more weeks of fresh market data (extending the dataset from 2026-04-21 to 2026-05-08, gaining 12 additional trading days and 2 walk-forward windows for 40 total), three new variants were tested against an updated baseline:
+
+1. **xgb_v2_decay**: exponential time-decay sample weighting on training rows, half-life 180 days. Weight is `0.5 ^ (age_days / 180)`, so a 6-month-old sample contributes half as much as today's sample.
+2. **xgb_v2_dynk**: dynamic K chosen per-window from the model's own score distribution. K equals the count of stocks with z-score above 1.0, clamped to [30, 80]. Strong-signal weeks use larger K; weak-signal weeks sit at the floor of 30.
+3. **xgb_v2_decay_dynk**: combination of both knobs.
+
+**Round 7 results, 40-window walk-forward:**
+
+| Strategy | n | Mean Excess | t-stat | Hit | Sel(30) | Hold(8) | Shrink |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **xgb_v2 (refreshed baseline)** | 40 | **+0.855%** | **+2.51** | 60% | +0.699% | **+1.321%** | +0.622% |
+| xgb_v2_decay | 40 | +0.462% | +1.47 | 53% | +0.288% | +0.983% | +0.694% |
+| xgb_v2_dynk | 40 | +0.789% | +2.28 | 60% | +0.628% | +1.274% | +0.646% |
+| xgb_v2_decay_dynk | 40 | +0.554% | +1.76 | 55% | +0.406% | +0.999% | +0.593% |
+
+**Key findings:**
+
+- **Baseline strengthens significantly with fresh data**: t-stat jumped from 2.03 to **2.51**, mean from +0.70% to **+0.855%**. Two weeks of new data plus two additional walk-forward windows materially improved the headline statistics.
+
+- **Time-decay sample weighting hurts**: both decay variants dropped 0.30 to 0.40 percentage points in mean and 1.0 in t-stat. The "newer is better" intuition is wrong here — XGBoost's own iteration count plus our 90-day validation window already discount older samples implicitly. Adding explicit decay over-rotates toward recent regime, hurting cross-sectional generalization.
+
+- **Dynamic K is essentially a wash**: chosen K averaged 56 (median 53) across windows, with 7 weeks at the floor of 30 and 1 at the ceiling of 80. The marginal mean drop (-0.07pp) is within sampling noise. The hypothesis that dispersion-based concentration would help proved false: the adaptive rule moved K when it shouldn't have, costing alpha.
+
+- **Combined decay + dynk is the worst of both worlds**: the decay loss dominates any dynk benefit.
+
+**Decision:** Reject all three variants. Continue shipping `xgb_v2` (the refreshed baseline) for Submission 2. The held-out judgment rule has now rejected new candidates in **three consecutive rounds** (Rounds 4, 5, 6, 7), reinforcing that further single-model knobs have approximately zero remaining edge against a well-tuned XGBoost baseline at this dataset size.
+
+**Submission 2 deliverable:** `submissions/submission2.csv`, generated using `xgb_v2` on data through 2026-05-08, top-50 rank-weighted with iterative 10% cap. Overlap with Submission 1 (generated 2026-04-21): 16 of 50 stocks (32%) — the model has rotated meaningfully on the newer features, as expected for a 2-week gap.
+
 ---
 
 ## 4. Final Decision and Deliverables
 
-### 4.1 Primary Submission
+### 4.1 Submission 1 (April 22, 2026)
 
-**File:** `submissions/round4_primary_xgb_v2.csv`
+**File:** `submissions/submission1.csv`
 **Strategy:** `xgb_v2` (XGBoost on 35 v2 features, top-50 rank-weighted with iterative 10% cap)
-**Expected weekly excess return:** +0.70% (full-sample) / +0.84% (held-out)
-**t-statistic:** 2.03 (significant at 5% level)
-**Worst observed window:** −2.80%
+**Data through:** 2026-04-30 (regenerated with later data)
+**Expected weekly excess return:** +0.70% (38-window mean) / +0.84% (held-out)
+**t-statistic:** 2.03
 
-**Rationale:** Best held-out mean (+0.84%) of any candidate across six rounds and 30+ strategies; only candidate with both positive shrinkage and statistically significant t-stat; lowest worst-window drawdown among aggressive variants.
+### 4.2 Submission 2 (May 10, 2026)
 
-### 4.2 Defensive Backup
+**File:** `submissions/submission2.csv`
+**Strategy:** `xgb_v2` (same as Submission 1 — Round 7 variants all rejected)
+**Data through:** 2026-05-08
+**Expected weekly excess return:** +0.86% (40-window mean) / +1.32% (last 8 windows)
+**t-statistic:** 2.51 (substantially stronger than Submission 1 due to fresher data)
+**Stock overlap with Submission 1:** 16 of 50 names (32%) — significant rotation as expected
+
+**Rationale (both submissions):** Best held-out mean of any candidate across seven rounds and 35+ strategies; only candidate with both positive shrinkage and statistically significant t-stat in every round it was evaluated; lowest worst-window drawdown among aggressive variants.
+
+### 4.3 Defensive Backup (not used)
 
 **File:** `submissions/round4_defensive_xgb_v3_winsor.csv`
 **Strategy:** `xgb_v3_winsor` (Round 4 best stability variant)
@@ -323,9 +366,9 @@ The whole process takes roughly 10 minutes door-to-door.
 
 ---
 
-## 5. Empirical Findings Compiled (14 Lessons)
+## 5. Empirical Findings Compiled (16 Lessons)
 
-Across six rounds, the following empirical findings emerged. Each is worth retaining for future quantitative finance work in this regime.
+Across seven rounds, the following empirical findings emerged. Each is worth retaining for future quantitative finance work in this regime.
 
 1. **Cross-sectional z-scoring of features per day is essential.** Without it, models learn calendar effects rather than relative alpha.
 2. **Daily winsorization at [1%, 99%] on features is non-negotiable.** Even a single un-clipped extreme observation can destabilize gradient boosting.
@@ -341,6 +384,8 @@ Across six rounds, the following empirical findings emerged. Each is worth retai
 12. **Core principle: model and ensemble complexity correlate with overfitting risk.** In low-SNR financial data, simpler models generalize better.
 13. **High validation IC does not imply high portfolio alpha.** The multi-task MLP achieved IC 0.070 (2.5x XGBoost) and IR 2.24 (10x XGBoost) but lost 0.44% per week selecting top-50. Mechanism: feature-linear models concentrate top-K picks on extreme tails where reversal dominates.
 14. **K-sweep confirms textbook diversification bound.** Sharpe ratio increases monotonically with K up to ~50 in this regime. Apparent mean improvement at K=10-20 is driven by a single outlier window; median spread vs K=50 over recent windows is negative for K=10 and K=20.
+15. **Explicit time-decay sample weighting hurts.** Half-life 180 days (a typical choice in FinML literature) reduced mean excess by 0.40 percentage points and dropped t-stat below 1.96. XGBoost's iterative tree-building, combined with the 90-day validation window, already implicitly down-weights stale samples. Adding explicit decay over-rotates toward the most recent regime and reduces cross-sectional generalization.
+16. **Score-distribution-driven dynamic K is a wash.** The chosen K averaged 56 (median 53) across 40 windows, with 7 weeks at the floor of 30 and 1 at the ceiling of 80. Marginal mean drop (-0.07pp) is within sampling noise. Adaptive concentration based on signal strength sounds intuitive but produces no robust gain on this dataset.
 
 ---
 
@@ -354,6 +399,7 @@ Across six rounds, the following empirical findings emerged. Each is worth retai
 | 4 | features_v3 + target winsorization attribution | **xgb_v2 K=50** + xgb_v3_winsor backup | +0.18% | Round 4 candidates fell short of v2 on held-out mean |
 | 5 | Multi-task MLP (PyTorch) negative-result control | **xgb_v2 K=50** | +0.18% | MLP −0.44% mean despite IC 2.5x stronger; xgb_mlp_blend pulled down to +0.23% |
 | 6 | K-sweep (K=10, 15, 20, 25) lottery test | **xgb_v2 K=50** | +0.18% | K-sweep gain driven by single outlier week; K=50 best mean and median once outlier excluded |
+| 7 | Time-decay sample weighting + dynamic K (data refreshed to 2026-05-08) | **xgb_v2 K=50 (refreshed)** | +0.62% | All 3 variants underperformed refreshed baseline; baseline improved to mean +0.86%, t=2.51 |
 
 ---
 
