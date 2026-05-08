@@ -797,10 +797,139 @@ class XGBStrategyV3WinsorConcentrated(XGBStrategyV3):
         return StrategyResult(weights=weights, diagnostics=diag)
 
 
+# ----------------------------------------------------------------------------
+# ROUND 6: time-decay sample weighting + dynamic K
+# ----------------------------------------------------------------------------
+# Two ideas:
+#   (a) Sample-weight training rows so recent observations matter more.
+#       weight_i = 0.5 ** (age_days / half_life_days)
+#       At HL=180d, samples 6mo old get weight 0.5, year-old get 0.25.
+#   (b) Dynamic K: pick K based on how many stocks have strong (z>1) scores.
+#       Strong-signal weeks -> use up to 80 names so we don't waste alpha;
+#       weak-signal weeks -> still use the rule floor of 30.
+#       K = clamp(n_stocks_with_z_above_1, 30, 80).
+# These are the only two model knobs we have NOT touched in 5 prior rounds,
+# so a positive held-out shrink would be genuinely new information.
+
+def _dynamic_k(scores: pd.Series, lo: int = 30, hi: int = 80,
+               z_threshold: float = 1.0) -> int:
+    """Choose K = number of stocks scoring more than `z_threshold` SDs above
+    cross-sectional mean, clamped to [lo, hi].
+
+    Rationale: the model's confidence varies a lot week to week.  When 80+
+    stocks all have z > 1 we have broad alpha and concentration costs us;
+    when only 25 do we are mostly fitting noise -- so we sit at the floor.
+    """
+    s = scores.dropna()
+    if len(s) < lo:
+        return lo
+    mu, sd = s.mean(), s.std(ddof=0)
+    if sd <= 0:
+        return lo
+    n_strong = int(((s - mu) / sd > z_threshold).sum())
+    return int(np.clip(n_strong, lo, hi))
+
+
+@dataclass
+class XGBStrategyDecay(XGBStrategyV2):
+    """xgb_v2 with exponential time-decay sample weighting on training rows.
+
+    Half-life (days) controls how fast old samples lose influence:
+        weight = 0.5 ** ((train_end - row_date).days / half_life_days)
+    So with HL=180, a 6-month-old sample contributes half as much as today's.
+    """
+    name: str = "xgb_v2_decay"
+    half_life_days: int = 180
+
+    def fit_predict_scores(self, panel, as_of):
+        feats = list(self.feature_columns)
+        tgt = self.target_column
+        train_df, val_df, train_end, val_start = _train_val_split(
+            panel, as_of, self.val_days, self.embargo,
+            training_frame_fn=self._training_frame_fn(),
+        )
+        # Time-decay weight: newest training row has weight 1.0, older shrinks.
+        age_days = (train_end - train_df["date"]).dt.days.to_numpy()
+        sw = np.power(0.5, age_days / float(self.half_life_days))
+
+        model = self._model()
+        model.fit(
+            train_df[feats], train_df[tgt],
+            sample_weight=sw,
+            eval_set=[(val_df[feats], val_df[tgt])],
+            verbose=False,
+        )
+
+        val_pred = model.predict(val_df[feats])
+        val_ic = rank_ic(
+            val_df[tgt].to_numpy(), val_pred, val_df["date"].to_numpy()
+        )
+
+        pred_df = self._prediction_frame_fn()(panel, as_of=as_of)
+        if pred_df.empty:
+            raise RuntimeError(f"No prediction rows on {as_of.date()}")
+        pred_df = pred_df.assign(score=model.predict(pred_df[feats]))
+        scores = pred_df.set_index("stock_code")["score"]
+
+        diag = {
+            "val_ic": val_ic,
+            "n_train": len(train_df),
+            "n_val": len(val_df),
+            "n_pred": len(pred_df),
+            "n_features": len(feats),
+            "train_end": train_end.date().isoformat(),
+            "val_start": val_start.date().isoformat(),
+            "best_iter": int(getattr(model, "best_iteration", -1) or -1),
+            "half_life_days": self.half_life_days,
+            "weight_min": float(sw.min()),
+            "weight_max": float(sw.max()),
+            "weight_recent_pct": float((sw > 0.5).mean()),  # fraction of recent rows
+        }
+        return scores, diag
+
+
+@dataclass
+class XGBStrategyDynK(XGBStrategyV2):
+    """xgb_v2 (no decay) with dynamic K chosen from score dispersion."""
+    name: str = "xgb_v2_dynk"
+    k_lo: int = 30
+    k_hi: int = 80
+    z_threshold: float = 1.0
+
+    def fit_predict(self, panel, as_of, top_k=DEFAULT_TOP_K):
+        scores, diag = self.fit_predict_scores(panel, as_of)
+        k = _dynamic_k(scores, lo=self.k_lo, hi=self.k_hi,
+                       z_threshold=self.z_threshold)
+        weights = build_portfolio(scores, top_k=k)
+        diag["chosen_k"] = k
+        return StrategyResult(weights=weights, diagnostics=diag)
+
+
+@dataclass
+class XGBStrategyDecayDynK(XGBStrategyDecay):
+    """Both knobs: time-decay sample weights AND dynamic K."""
+    name: str = "xgb_v2_decay_dynk"
+    k_lo: int = 30
+    k_hi: int = 80
+    z_threshold: float = 1.0
+
+    def fit_predict(self, panel, as_of, top_k=DEFAULT_TOP_K):
+        scores, diag = self.fit_predict_scores(panel, as_of)
+        k = _dynamic_k(scores, lo=self.k_lo, hi=self.k_hi,
+                       z_threshold=self.z_threshold)
+        weights = build_portfolio(scores, top_k=k)
+        diag["chosen_k"] = k
+        return StrategyResult(weights=weights, diagnostics=diag)
+
+
 # Register strategies here so the CLI can look them up by --strategy <name>.
 STRATEGIES: dict[str, Callable[[], Strategy]] = {
     "xgb_baseline": lambda: XGBStrategy(),
     "xgb_v2": lambda: XGBStrategyV2(),
+    # ROUND 6 single-knob ablations + combined
+    "xgb_v2_decay": lambda: XGBStrategyDecay(),                # time-decay only
+    "xgb_v2_dynk": lambda: XGBStrategyDynK(),                  # dynamic K only
+    "xgb_v2_decay_dynk": lambda: XGBStrategyDecayDynK(),       # both
     # K=10 concentrated portfolio (10 stocks x 10% each)
     "xgb_v2_k10": lambda: XGBStrategyK10(),
     # ROUND 6 aggressive K-sweep with consistent equal-weight portfolios
