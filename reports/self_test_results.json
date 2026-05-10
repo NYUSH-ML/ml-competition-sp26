@@ -1,0 +1,68 @@
+{
+  "methodology": {
+    "split_type": "chronological",
+    "train_fraction": 0.7,
+    "val_fraction": 0.15,
+    "test_fraction": 0.15,
+    "horizon_days": 5,
+    "stride_days": 5,
+    "embargo_days": 5,
+    "top_k_per_window": 50,
+    "leakage_guards": [
+      "5d forward target shifted strictly forward (groupby('stock').shift(-horizon))",
+      "5-day embargo between training cutoff and evaluation start",
+      "Cross-sectional features (z-score, pct-rank) computed per-date only",
+      "Test partition strictly succeeds val partition in calendar time",
+      "Universe constituents filter applied at scoring time only"
+    ],
+    "split_dates": {
+      "train_start": "2025-01-02T00:00:00.000000000",
+      "train_end": "2025-12-08",
+      "val_start": "2025-12-09",
+      "val_end": "2026-02-24",
+      "test_start": "2026-02-25",
+      "test_end": "2026-05-08",
+      "n_train_days": 226,
+      "n_val_days": 48,
+      "n_test_days": 49
+    }
+  },
+  "shipped_xgb_v2": {
+    "strategy": "xgb_v2",
+    "n_test_windows": 9,
+    "test_period_start": "2026-02-26",
+    "test_period_end": "2026-04-30",
+    "mean_excess": 0.0019132333998606822,
+    "median_excess": -0.003070366342208905,
+    "std_excess": 0.011253650850122792,
+    "t_stat": 0.5100300583360837,
+    "hit_rate": 0.3333333333333333,
+    "best_window": 0.02062871372548905,
+    "worst_window": -0.012387784728010347,
+    "mean_portfolio_return": -7.86920646341e-05,
+    "mean_benchmark_return": -0.0019919254644947815,
+    "ic_mean": 0.011189074685329977
+  },
+  "baseline_xgb_baseline": {
+    "strategy": "xgb_baseline",
+    "n_test_windows": 9,
+    "test_period_start": "2026-02-26",
+    "test_period_end": "2026-04-30",
+    "mean_excess": 0.0025642947812774186,
+    "median_excess": -0.0008166145796652813,
+    "std_excess": 0.014548018665690365,
+    "t_stat": 0.5287925813550773,
+    "hit_rate": 0.4444444444444444,
+    "best_window": 0.02948668875507239,
+    "worst_window": -0.019213490358278143,
+    "mean_portfolio_return": 0.0005723693167826372,
+    "mean_benchmark_return": -0.0019919254644947815,
+    "ic_mean": -0.0328272952755761
+  },
+  "comparison": {
+    "delta_mean_excess_pp": -0.06510613814167364,
+    "relative_improvement_pct": -25.38949055975563,
+    "shipped_beats_baseline": false
+  },
+  "timestamp": "20260510_121022"
+}
