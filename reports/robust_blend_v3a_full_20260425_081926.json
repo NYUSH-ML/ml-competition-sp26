@@ -1,0 +1,33 @@
+{
+  "strategy": "robust_blend_v3a",
+  "args": {
+    "strategy": "robust_blend_v3a",
+    "prices": "/vercel/share/v0-project/data/prices.parquet",
+    "index": "/vercel/share/v0-project/data/index.parquet",
+    "horizon": 5,
+    "stride": 5,
+    "n_windows": null,
+    "start": null,
+    "end": null,
+    "min_history": 120,
+    "top_k": 50,
+    "tag": "robust_blend_v3a_full",
+    "no_save": false,
+    "debug": false
+  },
+  "summary": {
+    "n_windows": 38,
+    "mean_excess": 0.00573518731666698,
+    "median_excess": 0.005597879081140141,
+    "std_excess": 0.019393662540497684,
+    "hit_rate": 0.5789473684210527,
+    "t_stat": 1.822970206410776,
+    "best_window": 0.054862530929393555,
+    "worst_window": -0.026703633284307363,
+    "mean_portfolio_return": 0.01483659524579759,
+    "mean_benchmark_return": 0.009101407929130612,
+    "ic_mean": 0.03289323525617536,
+    "ic_std": 0.12030159661752163,
+    "ic_ir": 0.27342309812191257
+  }
+}

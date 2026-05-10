@@ -1,0 +1,26 @@
+{
+  "strategy": "xgb_v2_effk20",
+  "effective_top_k": 20,
+  "floor_positions": 10,
+  "floor_weight_each": 0.0005,
+  "n_holdings_total": 30,
+  "top_block_weight_sum": 0.995,
+  "floor_block_weight_sum": 0.005000000000000001,
+  "max_weight": 0.09476190476190476,
+  "min_weight": 0.0005,
+  "weight_sum": 0.9999999999999996,
+  "as_of": "2026-05-08",
+  "val_ic": 0.07623961283414997,
+  "n_train": 140797,
+  "n_val": 4990,
+  "diagnostics": {
+    "val_ic": 0.07623961283414997,
+    "n_train": 140797,
+    "n_val": 4990,
+    "n_pred": 499,
+    "n_features": 33,
+    "train_end": "2026-04-07",
+    "val_start": "2026-04-15",
+    "best_iter": 105
+  }
+}

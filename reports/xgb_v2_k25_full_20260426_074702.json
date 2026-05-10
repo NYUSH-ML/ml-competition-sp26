@@ -1,0 +1,33 @@
+{
+  "strategy": "xgb_v2_k25",
+  "args": {
+    "strategy": "xgb_v2_k25",
+    "prices": "/vercel/share/v0-project/data/prices.parquet",
+    "index": "/vercel/share/v0-project/data/index.parquet",
+    "horizon": 5,
+    "stride": 5,
+    "n_windows": null,
+    "start": null,
+    "end": null,
+    "min_history": 120,
+    "top_k": 50,
+    "tag": "xgb_v2_k25_full",
+    "no_save": false,
+    "debug": false
+  },
+  "summary": {
+    "n_windows": 38,
+    "mean_excess": 0.007685735134445578,
+    "median_excess": 0.005233223243937039,
+    "std_excess": 0.02610099723316113,
+    "hit_rate": 0.5526315789473685,
+    "t_stat": 1.8151817289836532,
+    "best_window": 0.08680139518606142,
+    "worst_window": -0.02579548303914632,
+    "mean_portfolio_return": 0.01678714306357619,
+    "mean_benchmark_return": 0.009101407929130612,
+    "ic_mean": 0.027375297889948108,
+    "ic_std": 0.12058215279191463,
+    "ic_ir": 0.22702611668568334
+  }
+}

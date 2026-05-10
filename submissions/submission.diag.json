@@ -1,0 +1,19 @@
+{
+  "strategy": "xgb_v2",
+  "top_k": 50,
+  "as_of": "2026-05-08",
+  "n_holdings": 50,
+  "max_weight": 0.0392156862745098,
+  "min_weight": 0.000784313725490196,
+  "weight_sum": 0.9999999999999999,
+  "diagnostics": {
+    "val_ic": 0.08975059564284502,
+    "n_train": 140797,
+    "n_val": 4990,
+    "n_pred": 499,
+    "n_features": 33,
+    "train_end": "2026-04-07",
+    "val_start": "2026-04-15",
+    "best_iter": 88
+  }
+}
